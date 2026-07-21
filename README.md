@@ -1,4 +1,4 @@
-# E-commerce API + Autonomous Debugging Agent
+ Autonomous Debugging Agent
 
 Small Express API with products, cart, and checkout endpoints — containing intentional, interconnected bugs — plus an autonomous debugging agent (`agent/`) that finds and fixes them from failing tests.
 
@@ -17,33 +17,7 @@ The agent works one bug at a time under a harness-enforced protocol: **intake** 
 
 Every step — reasoning text, hypotheses, probes, edits, reverts, verdicts, token usage — is logged to the console live and to `debug-log.json` (structured). A human-readable summary lands in `debug-report.md`, and each run is archived under `agent-runs/`. Per bug, the report includes a **verification-based confidence score** (0–100%, derived from how the fix was verified: runtime probe > isolated test > code reading, plus independent validation, minus failed attempts), a **before → after diff snippet** of exactly what changed, and an **Easy/Medium/Hard difficulty rating** (weighted by failed attempts, app-code trace depth, and hypothesis churn). `npm run regenerate-report` rebuilds `debug-report.md` from an existing `debug-log.json` without re-running the agent.
 
-Guardrails: tests are read-only ground truth (the agent cannot "fix" a test), only `src/**` and `server.js` are editable, fixed-claim validation is re-run independently by the harness, and `.buggy-baseline/` keeps the pristine buggy state for repeatable runs.
-
-## The app
-
-## Setup
-
-```
-npm install
-```
-
-## Run the server
-
-```
-npm start
-```
-
-Server listens on `http://localhost:3000`.
-
-- `GET /products` — list products
-- `GET /products/:id` — get one product
-- `GET /cart` — view cart (send an `x-cart-id` header to scope the cart; defaults to `"default"`)
-- `POST /cart/items` — add item, body: `{ "productId": 1, "quantity": 2 }`
-- `PUT /cart/items/:productId` — update quantity, body: `{ "quantity": 3 }`
-- `DELETE /cart/items/:productId` — remove item
-- `DELETE /cart` — clear cart
-- `POST /checkout` — checkout, body: `{ "couponCode": "SAVE10" }` (optional)
-
+Guardrails: tests are read-only ground truth (the agent cannot "fix" a test), only `src/**` and `server.js` are editable, fixed-claim validation is re-run independently by the harness, and `.buggy-baseline/` keeps the pristine buggy state for repeatable runs
 ## Tests
 
 ```
