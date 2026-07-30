@@ -138,12 +138,14 @@ function rateDifficulty(session, events) {
 
 // ---------- report assembly ----------
 
-function buildReport({ sessions, finalTestState, usage, durationSeconds, events, completedAt }) {
+function buildReport({ sessions, finalTestState, usage, durationSeconds, events, completedAt, manifest = null, budget = null }) {
   return {
     completedAt: completedAt || new Date().toISOString(),
     durationSeconds,
     finalTestState,
     usage,
+    manifest,
+    budget,
     bugs: sessions.map((s) => ({
       bugNum: s.bugNum,
       symptom: {
@@ -195,6 +197,30 @@ function renderMarkdown(report) {
   L.push(
     `- Token usage: ${report.usage.apiCalls} API calls, ${report.usage.inputTokens} in / ${report.usage.outputTokens} out (cache: ${report.usage.cacheReadTokens} read, ${report.usage.cacheWriteTokens} written)`
   );
+  if (report.budget) {
+    const b = report.budget;
+    L.push(
+      `- Cost: ${b.estimatedCostUsd != null ? `$${b.estimatedCostUsd} (est.)` : `not reported — ${b.costNote}`}`
+    );
+    if (b.aborted) L.push(`- ⚠️ Run aborted by budget ceiling (${b.aborted.limit}): ${b.aborted.detail}`);
+  }
+  if (report.manifest) {
+    const m = report.manifest;
+    const p = m.provider || {};
+    L.push('');
+    L.push('<details><summary>Run manifest (reproducibility)</summary>');
+    L.push('');
+    L.push(`- Run id: \`${m.runId}\``);
+    L.push(`- Provider: ${p.provider} / \`${p.model}\`${m.resolvedModel && m.resolvedModel.version ? ` (resolved version \`${m.resolvedModel.version}\`)` : ''}`);
+    L.push(`- Temperature: ${p.temperature} — ${m.determinism.note}`);
+    L.push(`- System prompt hash: \`${m.hashes.systemPrompt.slice(0, 16)}\``);
+    L.push(`- Tool schema hash: \`${m.hashes.toolSchemas.slice(0, 16)}\``);
+    L.push(`- App source hash: \`${m.hashes.appSource.slice(0, 16)}\``);
+    L.push(`- Runtime: Node ${m.runtime.node} on ${m.runtime.platform}`);
+    if (m.git && m.git.commit) L.push(`- Git: \`${m.git.commit.slice(0, 8)}\` on \`${m.git.branch}\`${m.git.dirty ? ' (dirty working tree)' : ''}`);
+    L.push('');
+    L.push('</details>');
+  }
   L.push('');
   for (const b of report.bugs) {
     L.push(`## Bug #${b.bugNum}: ${b.symptom.test}`);

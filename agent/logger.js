@@ -38,6 +38,7 @@ class Logger {
     this.seq = 0;
     this.structure = {
       run: null,
+      manifest: null,
       baseline: null,
       sessions: [],
       events: [],
@@ -91,6 +92,16 @@ class Logger {
     this.structure.run = { startedAt: new Date().toISOString(), ...info };
     this.banner(`AUTONOMOUS DEBUGGING AGENT — model: ${info.model}`);
     this.event('run_start', info);
+  }
+
+  manifest(manifest) {
+    this.structure.manifest = manifest;
+    const p = manifest.provider || {};
+    const resolved = manifest.resolvedModel && manifest.resolvedModel.version;
+    console.log(
+      `  ${C.gray}run ${manifest.runId} | ${p.provider} ${p.model}${resolved ? ` (resolved ${resolved})` : ''} | temp ${p.temperature} | prompt ${manifest.hashes.systemPrompt.slice(0, 8)} | src ${manifest.hashes.appSource.slice(0, 8)}${C.reset}`
+    );
+    this.event('run_manifest', { manifest });
   }
 
   baseline(summary) {
