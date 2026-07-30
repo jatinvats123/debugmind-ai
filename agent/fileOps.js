@@ -3,6 +3,8 @@ const path = require('path');
 const { createTwoFilesPatch } = require('diff');
 
 // Directories/files the agent must never see or touch — its own machinery.
+// Compared case-insensitively: NTFS/APFS resolve `AGENT/` and `agent/` to the
+// same directory, so a case-sensitive check is not a control at all.
 const HIDDEN = new Set([
   'node_modules',
   '.git',
@@ -10,21 +12,41 @@ const HIDDEN = new Set([
   'agent',
   'scripts',
   'agent-runs',
-  '.env',
+  'fixtures',
   'debug-log.json',
   'debug-report.md',
+  'audit.md',
   '.agent-snippet.js',
   'package-lock.json',
 ]);
 
+/**
+ * Normalise a path for guard comparison: backslashes to slashes, `.`/`..`
+ * segments collapsed, lowercased. Collapsing is what makes the guards safe to
+ * call on raw model input — `src/../tests/x.js` must not read as `src/…`.
+ */
+function normalizeForGuard(relPath) {
+  const slashed = String(relPath).replace(/\\/g, '/');
+  const collapsed = path.posix.normalize(slashed).replace(/^\.\//, '').replace(/\/+$/, '');
+  return collapsed.toLowerCase();
+}
+
+/** Secrets are matched by prefix so .env.local / .env.production are covered too. */
+function isSecretPath(normPath) {
+  return normPath.split('/').some((segment) => segment === '.env' || segment.startsWith('.env.'));
+}
+
 // Files the agent may EDIT. Tests are ground truth (read-only); package.json is config.
 function isEditable(relPath) {
-  const norm = relPath.replace(/\\/g, '/');
+  const norm = normalizeForGuard(relPath);
+  if (norm.startsWith('..')) return false;
   return norm === 'server.js' || norm.startsWith('src/');
 }
 
 function isVisible(relPath) {
-  const norm = relPath.replace(/\\/g, '/');
+  const norm = normalizeForGuard(relPath);
+  if (norm.startsWith('..')) return false;
+  if (isSecretPath(norm)) return false;
   const top = norm.split('/')[0];
   return !HIDDEN.has(top) && !HIDDEN.has(norm);
 }
@@ -113,11 +135,11 @@ class FileOps {
     for (const e of fs.readdirSync(abs, { withFileTypes: true })) {
       const childRel = rel === '' || rel === '.' ? e.name : `${rel}/${e.name}`;
       if (!isVisible(childRel)) continue;
-      if (e.isDirectory()) {
-        entries.push({ name: e.name + '/', type: 'dir' });
-      } else {
-        entries.push({ name: e.name, type: 'file', size: fs.statSync(path.join(abs, e.name)).size });
-      }
+      // Deliberately no file size: it is noise for debugging, and it made tool
+      // output vary with unrelated repo edits, which broke replay fixtures.
+      entries.push(
+        e.isDirectory() ? { name: e.name + '/', type: 'dir' } : { name: e.name, type: 'file' }
+      );
     }
     entries.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
     return entries;
@@ -248,4 +270,4 @@ class FileOps {
   }
 }
 
-module.exports = { FileOps, isEditable };
+module.exports = { FileOps, isEditable, isVisible, isSecretPath, normalizeForGuard };

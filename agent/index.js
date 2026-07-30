@@ -3,17 +3,31 @@
  * Autonomous debugging agent — CLI entry point.
  *
  * Usage:
- *   node agent/index.js [--restore] [--target "<test name substring>"]
- *                       [--model <model-id>] [--effort low|medium|high|xhigh|max]
- *                       [--max-attempts N]
+ *   node agent/index.js [options]
  *
- * Requires GEMINI_API_KEY (env var or .env file at the project root).
+ *   --restore                 restore the buggy baseline before running
+ *   --provider gemini|mock    backend (default gemini; mock needs no API key)
+ *   --cassette <path>         cassette to replay (mock) or record into
+ *   --record                  record this run's provider turns to --cassette
+ *   --model <id>              model id (default gemini-3.1-flash-lite)
+ *   --temperature <n>         sampling temperature (default 0)
+ *   --effort low|medium|high|xhigh
+ *   --max-attempts <n>        failed fix attempts per bug (default 4)
+ *   --max-bugs <n>            bug sessions per run (default 6)
+ *   --target "<substring>"    only debug tests matching this substring
+ *   --max-tokens <n>          abort once total tokens exceed this
+ *   --max-cost <usd>          abort once estimated cost exceeds this
+ *   --max-minutes <n>         abort once wall-clock exceeds this
+ *   --max-api-calls <n>       abort after this many provider calls
+ *
+ * Requires GEMINI_API_KEY (env or .env file) unless --provider mock.
  */
 const fs = require('fs');
 const path = require('path');
-const { GeminiClient } = require('./llm');
+const { createProvider } = require('./providers');
 const { Orchestrator } = require('./orchestrator');
 const { Logger } = require('./logger');
+const { Budget } = require('./budget');
 
 const projectRoot = path.resolve(__dirname, '..');
 
@@ -28,29 +42,52 @@ function loadDotEnv() {
   }
 }
 
+const FLAGS = {
+  '--restore': (a) => (a.restore = true),
+  '--record': (a) => (a.record = true),
+  '--provider': (a, v) => (a.provider = v),
+  '--cassette': (a, v) => (a.cassette = v),
+  '--target': (a, v) => (a.target = v),
+  '--model': (a, v) => (a.model = v),
+  '--effort': (a, v) => (a.effort = v),
+  '--temperature': (a, v) => (a.temperature = parseFloat(v)),
+  '--max-attempts': (a, v) => (a.maxAttempts = parseInt(v, 10)),
+  '--max-bugs': (a, v) => (a.maxBugs = parseInt(v, 10)),
+  '--max-tokens': (a, v) => (a.maxTokens = parseInt(v, 10)),
+  '--max-cost': (a, v) => (a.maxCostUsd = parseFloat(v)),
+  '--max-minutes': (a, v) => (a.maxMinutes = parseFloat(v)),
+  '--max-api-calls': (a, v) => (a.maxApiCalls = parseInt(v, 10)),
+};
+
 function parseArgs(argv) {
-  const args = { restore: false, target: null, model: null, effort: null, maxAttempts: 4 };
+  const args = {
+    restore: false,
+    record: false,
+    provider: process.env.AGENT_PROVIDER || 'gemini',
+    cassette: null,
+    target: null,
+    model: null,
+    effort: null,
+    temperature: 0,
+    maxAttempts: 4,
+    maxBugs: 6,
+    maxTokens: null,
+    maxCostUsd: null,
+    maxMinutes: null,
+    maxApiCalls: null,
+  };
   for (let i = 0; i < argv.length; i++) {
-    switch (argv[i]) {
-      case '--restore':
-        args.restore = true;
-        break;
-      case '--target':
-        args.target = argv[++i];
-        break;
-      case '--model':
-        args.model = argv[++i];
-        break;
-      case '--effort':
-        args.effort = argv[++i];
-        break;
-      case '--max-attempts':
-        args.maxAttempts = parseInt(argv[++i], 10) || 4;
-        break;
-      default:
-        console.error(`Unknown argument: ${argv[i]}`);
-        process.exit(1);
+    const flag = argv[i];
+    if (flag === '--help' || flag === '-h') {
+      console.log(fs.readFileSync(__filename, 'utf8').split('*/')[0].replace(/^#![^\n]*\n/, '').replace(/\/\*\*|\s\*\s?/g, ''));
+      process.exit(0);
     }
+    const handler = FLAGS[flag];
+    if (!handler) {
+      console.error(`Unknown argument: ${flag}\nRun with --help for usage.`);
+      process.exit(1);
+    }
+    handler(args, handler.length > 1 ? argv[++i] : undefined);
   }
   return args;
 }
@@ -64,47 +101,72 @@ async function main() {
   }
 
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-  if (!apiKey) {
+  if (args.provider === 'gemini' && !apiKey) {
     console.error(
-      'No API credentials found. Set GEMINI_API_KEY in the environment or in a .env file at the project root.'
+      'No API credentials found. Set GEMINI_API_KEY in the environment or in a .env file at the project root,\n' +
+        'or run offline against a recorded cassette: --provider mock --cassette fixtures/<name>.cassette.json'
     );
     process.exit(1);
   }
+  if (args.provider === 'mock' && !args.cassette) {
+    console.error('--provider mock requires --cassette <path to .cassette.json>');
+    process.exit(1);
+  }
 
-  // Default chosen empirically: free-tier keys have no quota for 2.5-pro (limit 0)
-  // and only 20 req/day for gemini-3-flash; 3.1-flash-lite completes a full run.
   const model = args.model || process.env.AGENT_MODEL || 'gemini-3.1-flash-lite';
   const effort = args.effort || process.env.AGENT_EFFORT || 'high';
 
-  const client = new GeminiClient({ apiKey, model, effort });
   const logger = new Logger(projectRoot);
-  client.onRetry = (msg) => logger.harness(msg);
+  const provider = createProvider({
+    provider: args.provider,
+    apiKey,
+    model,
+    temperature: args.temperature,
+    effort,
+    cassettePath: args.cassette,
+    record: args.record,
+  });
+  provider.onRetry = (msg) => logger.harness(msg);
 
   try {
-    await client.preflight();
+    await provider.preflight();
   } catch (e) {
-    console.error(`Pre-flight call to ${model} failed: ${e.message}`);
-    try {
-      const models = (await client.listModels()).filter((m) => m.startsWith('gemini')).slice(0, 20);
-      console.error(`Models available to this key include:\n  ${models.join('\n  ')}`);
-    } catch {
-      /* listing also failed — key is likely invalid */
+    console.error(`Pre-flight failed for ${args.provider}/${model}: ${e.message}`);
+    if (args.provider === 'gemini' && typeof provider.listModels === 'function') {
+      try {
+        const models = (await provider.listModels()).filter((m) => m.startsWith('gemini')).slice(0, 20);
+        console.error(`Models available to this key include:\n  ${models.join('\n  ')}`);
+      } catch {
+        /* listing also failed — key is likely invalid */
+      }
     }
     process.exit(1);
   }
 
+  const budget = new Budget({
+    projectRoot,
+    model,
+    maxTokens: args.maxTokens,
+    maxCostUsd: args.maxCostUsd,
+    maxWallClockMs: args.maxMinutes != null ? args.maxMinutes * 60000 : null,
+    maxApiCalls: args.maxApiCalls,
+  });
+
   const orchestrator = new Orchestrator({
-    client,
+    provider,
     model,
     effort,
     projectRoot,
     logger,
     maxAttempts: args.maxAttempts,
     targetFilter: args.target,
+    budget,
+    maxBugSessions: args.maxBugs,
   });
 
   try {
     await orchestrator.run();
+    if (typeof provider.flush === 'function') provider.flush();
   } catch (e) {
     console.error(`\nFATAL: ${e.message}`);
     logger.event('fatal_error', { error: e.message, stack: e.stack });

@@ -96,6 +96,16 @@ function runJest(projectRoot, extraArgs = []) {
     }
   }
 
+  // Jest does not guarantee a stable order across runs (it schedules test files
+  // by its own heuristics), and the agent takes its bug queue from this list.
+  // Unsorted, the same repo can produce a different debugging order run to run,
+  // which makes benchmark runs incomparable and replay fixtures unusable.
+  // Sort canonically so the queue is a function of the code, not the scheduler.
+  const byFileThenName = (a, b) =>
+    a.file === b.file ? a.fullName.localeCompare(b.fullName) : a.file.localeCompare(b.file);
+  failing.sort(byFileThenName);
+  passing.sort();
+
   return {
     numTotalTests: json.numTotalTests,
     numPassedTests: json.numPassedTests,
@@ -103,7 +113,7 @@ function runJest(projectRoot, extraArgs = []) {
     success: json.success,
     failing,
     passing,
-    consoleOutput,
+    consoleOutput: consoleOutput.sort((a, b) => a.file.localeCompare(b.file)),
   };
 }
 

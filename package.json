@@ -8,6 +8,8 @@
     "test": "jest",
     "agent": "node agent/index.js",
     "agent:smoke": "node scripts/smoke-tools.js",
+    "agent:offline": "node agent/index.js --restore --provider mock --cassette fixtures/three-bug-run.cassette.json",
+    "agent:record": "node agent/index.js --restore --record --cassette fixtures/three-bug-run.cassette.json",
     "snapshot-bugs": "node scripts/snapshot-bugs.js",
     "restore-bugs": "node scripts/restore-bugs.js",
     "regenerate-report": "node scripts/regenerate-report.js"

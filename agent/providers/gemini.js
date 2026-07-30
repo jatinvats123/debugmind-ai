@@ -1,9 +1,11 @@
 /**
- * Gemini API client wrapper (function calling + thinking) for the debugging agent.
- * Converts the agent's JSON-schema tool definitions to Gemini functionDeclarations
- * and normalizes responses/usage. Retries transient errors with backoff.
+ * Gemini backend: function calling + thinking, behind the LLMProvider interface.
+ * Converts the agent's JSON-schema tool definitions to Gemini
+ * functionDeclarations, normalises responses/usage, and retries transient
+ * errors with exponential backoff and jitter.
  */
 const { GoogleGenAI } = require('@google/genai');
+const { LLMProvider } = require('./base');
 
 const TYPE_MAP = {
   object: 'OBJECT',
@@ -48,9 +50,9 @@ function isDailyQuotaError(e) {
   return /PerDay|per day|daily/i.test(String(e.message || ''));
 }
 
-async function withRetry(fn, onRetry) {
+async function withRetry(fn, onRetry, maxAttempts = 8) {
   let lastErr;
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < maxAttempts; i++) {
     try {
       return await fn();
     } catch (e) {
@@ -66,30 +68,68 @@ async function withRetry(fn, onRetry) {
       let delayMs = Math.min(60000, 1500 * 2 ** i) + Math.random() * 1000;
       const m = String(e.message).match(/retry.?delay[^0-9]*([0-9.]+)\s*s/i);
       if (m) delayMs = Math.max(delayMs, parseFloat(m[1]) * 1000 + 500);
-      if (onRetry) onRetry(`Gemini error ${status || ''} — retrying in ${Math.round(delayMs / 1000)}s (attempt ${i + 1}/8)`);
+      if (onRetry) onRetry(`Gemini error ${status || ''} — retrying in ${Math.round(delayMs / 1000)}s (attempt ${i + 1}/${maxAttempts})`);
       await new Promise((r) => setTimeout(r, delayMs));
     }
   }
   throw lastErr;
 }
 
-class GeminiClient {
-  constructor({ apiKey, model, effort = 'high' }) {
-    this.ai = new GoogleGenAI({ apiKey });
-    this.model = model;
-    // Map the CLI's effort knob to a Gemini thinking budget (-1 = dynamic).
-    this.thinkingBudget = { low: 1024, medium: 4096, high: -1, xhigh: 32768, max: 32768 }[effort] ?? -1;
-    this.onRetry = null;
+/** Normalise a Gemini candidate into the provider-neutral response shape. */
+function normalize(response) {
+  const candidate = (response.candidates && response.candidates[0]) || null;
+  const parts = (candidate && candidate.content && candidate.content.parts) || [];
+  const u = response.usageMetadata || {};
+
+  const thoughts = [];
+  const textChunks = [];
+  const toolCalls = [];
+  for (const p of parts) {
+    if (p.functionCall) {
+      toolCalls.push({ id: p.functionCall.id, name: p.functionCall.name, args: p.functionCall.args || {} });
+    } else if (p.thought && p.text) {
+      thoughts.push(p.text);
+    } else if (p.text) {
+      textChunks.push(p.text);
+    }
   }
 
-  /** Cheap pre-flight to fail fast on bad keys/model ids before a long run. */
+  return {
+    text: textChunks.join('\n'),
+    thoughts,
+    toolCalls,
+    raw: candidate ? candidate.content : null,
+    finishReason: candidate ? candidate.finishReason : null,
+    usage: {
+      input_tokens: u.promptTokenCount || 0,
+      output_tokens: (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0),
+      cache_read_input_tokens: u.cachedContentTokenCount || 0,
+      cache_creation_input_tokens: 0,
+    },
+  };
+}
+
+class GeminiProvider extends LLMProvider {
+  constructor({ apiKey, model, temperature = 0, effort = 'high', maxOutputTokens = 16384 }) {
+    super({ model, temperature });
+    this.ai = new GoogleGenAI({ apiKey });
+    this.effort = effort;
+    this.maxOutputTokens = maxOutputTokens;
+    // Map the CLI's effort knob to a Gemini thinking budget (-1 = dynamic).
+    this.thinkingBudget = { low: 1024, medium: 4096, high: -1, xhigh: 32768, max: 32768 }[effort] ?? -1;
+  }
+
+  describe() {
+    return { ...super.describe(), effort: this.effort, thinkingBudget: this.thinkingBudget, maxOutputTokens: this.maxOutputTokens };
+  }
+
   async preflight() {
     await withRetry(
       () =>
         this.ai.models.generateContent({
           model: this.model,
           contents: [{ role: 'user', parts: [{ text: 'Reply with the single word: ok' }] }],
-          config: { maxOutputTokens: 1500 },
+          config: { maxOutputTokens: 1500, temperature: this.temperature },
         }),
       this.onRetry
     );
@@ -104,12 +144,34 @@ class GeminiClient {
     return names;
   }
 
-  /**
-   * One conversation turn.
-   * @returns {candidate, usage} — candidate.content.parts may contain
-   *   {text}, {text, thought:true}, and {functionCall:{name,args,id?}} parts.
-   */
-  async chat({ system, toolDefs, contents }) {
+  /** Resolve the concrete model version behind an alias, for the run manifest. */
+  async resolveModelVersion() {
+    try {
+      const info = await this.ai.models.get({ model: this.model });
+      return { name: info.name, version: info.version || null, displayName: info.displayName || null };
+    } catch (e) {
+      return { name: this.model, version: null, resolutionError: e.message };
+    }
+  }
+
+  async generate({ system, prompt }) {
+    const response = await withRetry(
+      () =>
+        this.ai.models.generateContent({
+          model: this.model,
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          config: {
+            systemInstruction: system,
+            temperature: this.temperature,
+            maxOutputTokens: this.maxOutputTokens,
+          },
+        }),
+      this.onRetry
+    );
+    return normalize(response);
+  }
+
+  async generateWithTools({ system, toolDefs, contents }) {
     const response = await withRetry(
       () =>
         this.ai.models.generateContent({
@@ -117,26 +179,16 @@ class GeminiClient {
           contents,
           config: {
             systemInstruction: system,
+            temperature: this.temperature,
             tools: [{ functionDeclarations: toFunctionDeclarations(toolDefs) }],
             thinkingConfig: { includeThoughts: true, thinkingBudget: this.thinkingBudget },
-            maxOutputTokens: 16384,
+            maxOutputTokens: this.maxOutputTokens,
           },
         }),
       this.onRetry
     );
-
-    const candidate = response.candidates && response.candidates[0];
-    const u = response.usageMetadata || {};
-    return {
-      candidate,
-      usage: {
-        input_tokens: u.promptTokenCount || 0,
-        output_tokens: (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0),
-        cache_read_input_tokens: u.cachedContentTokenCount || 0,
-        cache_creation_input_tokens: 0,
-      },
-    };
+    return normalize(response);
   }
 }
 
-module.exports = { GeminiClient, toFunctionDeclarations };
+module.exports = { GeminiProvider, toFunctionDeclarations, normalize, withRetry };

@@ -3,12 +3,17 @@ const { SYSTEM_PROMPT, buildIntakeMessage } = require('./prompts');
 const { runJest, runSpecificTest, summarizeForModel } = require('./testRunner');
 const { getCallGraph } = require('./callGraph');
 const { runSnippet } = require('./snippet');
+const { pruneContents } = require('./context');
 
 const MAX_TURNS = 45;
 
 class BugSession {
-  constructor({ client, model, effort, projectRoot, fileOps, logger, bugNum, target, currentSummary, priorFixes, maxAttempts = 4 }) {
-    this.client = client;
+  constructor({ client, provider, model, effort, projectRoot, fileOps, logger, bugNum, target, currentSummary, priorFixes, maxAttempts = 4, budget = null, contextOptions = {} }) {
+    // `provider` is the LLMProvider; `client` accepted as a legacy alias.
+    this.provider = provider || client;
+    this.client = this.provider;
+    this.budget = budget;
+    this.contextOptions = contextOptions;
     this.model = model;
     this.effort = effort;
     this.projectRoot = projectRoot;
@@ -34,6 +39,12 @@ class BugSession {
     this.harnessForcedReview = false;
     this.verificationRuns = 0;
     this.snippetProbes = 0;
+    this.isolatedTestRuns = 0;
+    this.tamperEvents = 0;
+    // Evidence watermarks: a confirmation may only cite work done AFTER the
+    // hypotheses it confirms were recorded, so stale evidence cannot be reused.
+    this.probesAtLastHypothesis = 0;
+    this.isolatedRunsAtLastHypothesis = 0;
   }
 
   // ---------- verdict computation ----------
@@ -54,7 +65,7 @@ class BugSession {
       switch (name) {
         case 'list_files': {
           const entries = fo.listFiles(input.directory || '.');
-          return { text: entries.map((e) => (e.type === 'dir' ? e.name : `${e.name} (${e.size} bytes)`)).join('\n') || '(empty)' };
+          return { text: entries.map((e) => e.name).join('\n') || '(empty)' };
         }
         case 'read_file':
           return { text: fo.readFile(input.path) };
@@ -75,6 +86,7 @@ class BugSession {
           if (summary.numTotalTests === 0) {
             return { text: `No tests matched "${input.testName}". Use the exact name from the failure output.`, isError: true };
           }
+          this.isolatedTestRuns += 1;
           return { text: summarizeForModel(summary) };
         }
         case 'run_snippet': {
@@ -83,6 +95,23 @@ class BugSession {
           const parts = [`exit code: ${res.exitCode}${res.timedOut ? ' (TIMED OUT)' : ''}`];
           if (res.stdout) parts.push(`--- stdout ---\n${res.stdout}`);
           if (res.stderr) parts.push(`--- stderr ---\n${res.stderr}`);
+          if (res.tampered) {
+            // Ground truth was modified by a probe. Treat as a protocol violation:
+            // any result derived from a mutated suite is worthless.
+            this.tamperEvents += 1;
+            this.logger.harness(`INTEGRITY VIOLATION — ${res.tamperDetail}`, { tool: 'run_snippet' });
+            parts.push(
+              '\n[HARNESS] INTEGRITY VIOLATION: this probe modified tests/ or package.json. ' +
+                'Those files are read-only ground truth. The violation is recorded in the run log; ' +
+                'probes must only observe behaviour, never write. Re-run a read-only probe.'
+            );
+            return { text: parts.join('\n'), isError: true };
+          }
+          if (!res.sandboxed) {
+            parts.push(
+              `\n[HARNESS] Note: probe ran unsandboxed (Node ${process.versions.node} predates the permission model); integrity verified by hash instead.`
+            );
+          }
           return { text: parts.join('\n') };
         }
         case 'diff_check': {
@@ -208,6 +237,9 @@ class BugSession {
     }
     this.hypotheses.push(...hs);
     this.logger.hypotheses(hs);
+    // Evidence cited by a later confirmation must post-date these hypotheses.
+    this.probesAtLastHypothesis = this.snippetProbes;
+    this.isolatedRunsAtLastHypothesis = this.isolatedTestRuns;
     return {
       text: `Recorded ${hs.length} hypotheses (${hs.map((h) => h.id).join(', ')}). Next: verify the leading one non-destructively (run_snippet / run_specific_test) before editing.`,
     };
@@ -221,11 +253,40 @@ class BugSession {
         isError: true,
       };
     }
-    this.confirmations.push({ ...input, at: new Date().toISOString() });
+    // The verification METHOD drives the confidence score in the final report, so
+    // the harness checks the claim against work it actually observed rather than
+    // taking the model's word for it.
+    const newProbes = this.snippetProbes - this.probesAtLastHypothesis;
+    const newIsolatedRuns = this.isolatedTestRuns - this.isolatedRunsAtLastHypothesis;
+    if (input.method === 'snippet_probe' && newProbes === 0) {
+      return {
+        text:
+          '[HARNESS GUARD] method="snippet_probe" rejected: no run_snippet probe has executed since these hypotheses were recorded. ' +
+          'Run the probe that demonstrates the mechanism, then confirm citing its output — or confirm with method="code_reading" and accept the lower confidence.',
+        isError: true,
+      };
+    }
+    if (input.method === 'isolated_test' && newIsolatedRuns === 0) {
+      return {
+        text:
+          '[HARNESS GUARD] method="isolated_test" rejected: no run_specific_test has executed since these hypotheses were recorded.',
+        isError: true,
+      };
+    }
+
+    this.confirmations.push({
+      ...input,
+      at: new Date().toISOString(),
+      // Recorded so the report can prove the method was corroborated, not asserted.
+      evidenceObserved: { probesSinceHypotheses: newProbes, isolatedRunsSinceHypotheses: newIsolatedRuns },
+      methodVerifiedByHarness: input.method !== 'code_reading',
+    });
     this.logger.confirmation(input);
     let note = `Hypothesis ${input.id} confirmed. edit_file is now unlocked.`;
     if (input.method === 'code_reading') {
       note += ' (Confirmed by code reading only — consider a run_snippet probe for stronger evidence, and calibrate final confidence accordingly.)';
+    } else {
+      note += ` (Harness corroborated: ${newProbes} probe(s) and ${newIsolatedRuns} isolated test run(s) since these hypotheses were recorded.)`;
     }
     return { text: note };
   }
@@ -337,33 +398,52 @@ class BugSession {
     const contents = [{ role: 'user', parts: [{ text: intake }] }];
 
     for (let turn = 1; turn <= MAX_TURNS; turn++) {
+      // Ceilings are checked before spending, so an exhausted budget ends the
+      // run cleanly instead of draining a quota mid-session.
+      if (this.budget) {
+        const violation = this.budget.check();
+        if (violation) {
+          this.logger.harness(`BUDGET EXCEEDED (${violation.limit}): ${violation.detail} — closing session`);
+          return this.forceReview(`Budget exceeded (${violation.limit}): ${violation.detail}`);
+        }
+      }
+
+      const pruning = pruneContents(contents, this.contextOptions);
+      if (pruning.pruned) {
+        this.logger.harness(
+          `context pruned: ${pruning.elidedParts} bulky tool result(s) elided (${pruning.originalChars} -> ${pruning.prunedChars} chars)`,
+          { elidedParts: pruning.elidedParts }
+        );
+      }
+
       let res;
       try {
-        res = await this.client.chat({ system: SYSTEM_PROMPT, toolDefs: TOOL_DEFINITIONS, contents });
+        res = await this.provider.generateWithTools({
+          system: SYSTEM_PROMPT,
+          toolDefs: TOOL_DEFINITIONS,
+          contents: pruning.contents,
+        });
       } catch (e) {
         this.logger.harness(`API error: ${e.message} — aborting session`);
         return this.forceReview(`API failure: ${e.message}`);
       }
 
       this.logger.usage(res.usage);
-      const candidate = res.candidate;
-      const parts = (candidate && candidate.content && candidate.content.parts) || [];
+      if (this.budget) this.budget.record(res.usage, { bug: this.bugNum, turn });
 
-      for (const p of parts) {
-        if (p.thought && p.text) this.logger.modelThinking(p.text);
-        else if (p.text) this.logger.modelText(p.text);
-      }
+      for (const t of res.thoughts || []) this.logger.modelThinking(t);
+      if (res.text) this.logger.modelText(res.text);
 
-      const finishReason = candidate && candidate.finishReason;
+      const finishReason = res.finishReason;
       if (finishReason === 'SAFETY' || finishReason === 'PROHIBITED_CONTENT' || finishReason === 'RECITATION') {
         this.logger.harness(`model response blocked (${finishReason}) — aborting session`);
         return this.forceReview(`Model response blocked: ${finishReason}.`);
       }
 
-      const functionCalls = parts.filter((p) => p.functionCall).map((p) => p.functionCall);
+      const toolCalls = res.toolCalls || [];
 
-      if (functionCalls.length === 0) {
-        if (candidate && candidate.content) contents.push(candidate.content);
+      if (toolCalls.length === 0) {
+        if (res.raw) contents.push(res.raw);
         const nudge =
           finishReason === 'MAX_TOKENS'
             ? '[HARNESS] Your response was truncated by the token limit. Continue more concisely.'
@@ -372,22 +452,22 @@ class BugSession {
         continue;
       }
 
-      contents.push(candidate.content);
+      contents.push(res.raw);
 
       const responseParts = [];
       let finished = null;
-      for (const fc of functionCalls) {
-        const input = fc.args || {};
-        this.logger.toolCall(fc.name, input);
+      for (const call of toolCalls) {
+        const input = call.args || {};
+        this.logger.toolCall(call.name, input);
         const result = finished
           ? { text: '[HARNESS] Session already finished; call ignored.', isError: true }
-          : this.executeTool(fc.name, input);
-        this.logger.toolResult(fc.name, result.text, !!result.isError);
+          : this.executeTool(call.name, input);
+        this.logger.toolResult(call.name, result.text, !!result.isError);
         const fr = {
-          name: fc.name,
+          name: call.name,
           response: result.isError ? { error: result.text } : { result: result.text },
         };
-        if (fc.id) fr.id = fc.id;
+        if (call.id) fr.id = call.id;
         responseParts.push({ functionResponse: fr });
         if (result.finish) finished = result.finish;
       }
@@ -448,6 +528,8 @@ class BugSession {
         failedAttempts: this.attempts,
         verificationRuns: this.verificationRuns,
         snippetProbes: this.snippetProbes,
+        isolatedTestRuns: this.isolatedTestRuns,
+        tamperEvents: this.tamperEvents,
       },
     };
   }

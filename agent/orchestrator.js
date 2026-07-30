@@ -5,18 +5,37 @@ const { FileOps } = require('./fileOps');
 const { runJest } = require('./testRunner');
 const { C } = require('./logger');
 const { buildReport, renderMarkdown } = require('./report');
+const { buildManifest } = require('./manifest');
+const { SYSTEM_PROMPT } = require('./prompts');
+const { TOOL_DEFINITIONS } = require('./tools');
 
 const MAX_BUG_SESSIONS = 6;
 
 class Orchestrator {
-  constructor({ client, model, effort, projectRoot, logger, maxAttempts = 4, targetFilter = null }) {
-    this.client = client;
+  constructor({
+    client,
+    provider,
+    model,
+    effort,
+    projectRoot,
+    logger,
+    maxAttempts = 4,
+    targetFilter = null,
+    budget = null,
+    contextOptions = {},
+    maxBugSessions = MAX_BUG_SESSIONS,
+  }) {
+    this.provider = provider || client;
+    this.client = this.provider;
     this.model = model;
     this.effort = effort;
     this.projectRoot = projectRoot;
     this.logger = logger;
     this.maxAttempts = maxAttempts;
     this.targetFilter = targetFilter;
+    this.budget = budget;
+    this.contextOptions = contextOptions;
+    this.maxBugSessions = maxBugSessions;
     this.fileOps = new FileOps(projectRoot);
   }
 
@@ -30,6 +49,30 @@ class Orchestrator {
       throw new Error(`Baseline test run failed: ${currentSummary.error}`);
     }
     this.logger.baseline(currentSummary);
+
+    // The manifest pins exactly what produced this run: resolved model version,
+    // sampling params, and content hashes of the prompt, tool schemas and app source.
+    const manifest = await buildManifest({
+      projectRoot: this.projectRoot,
+      provider: this.provider,
+      systemPrompt: SYSTEM_PROMPT,
+      toolDefs: TOOL_DEFINITIONS,
+      config: {
+        maxAttempts: this.maxAttempts,
+        maxBugSessions: this.maxBugSessions,
+        targetFilter: this.targetFilter,
+        budgetLimits: this.budget ? this.budget.limits : null,
+        contextOptions: this.contextOptions,
+      },
+      baseline: {
+        passed: currentSummary.numPassedTests,
+        failed: currentSummary.numFailedTests,
+        total: currentSummary.numTotalTests,
+        failing: currentSummary.failing.map((f) => f.fullName),
+      },
+    });
+    this.manifest = manifest;
+    this.logger.manifest(manifest);
 
     const sessions = [];
     const priorFixes = [];
@@ -49,13 +92,21 @@ class Orchestrator {
       console.log(`${C.green}All tests passing — nothing to debug.${C.reset}`);
     }
 
-    while (queue.length > 0 && bugNum < MAX_BUG_SESSIONS) {
+    while (queue.length > 0 && bugNum < this.maxBugSessions) {
+      if (this.budget) {
+        const violation = this.budget.check();
+        if (violation) {
+          this.logger.harness(`BUDGET EXCEEDED (${violation.limit}): ${violation.detail} — stopping before next bug`);
+          break;
+        }
+      }
+
       bugNum += 1;
       const target = queue[0];
       const sessionStart = Date.now();
 
       const session = new BugSession({
-        client: this.client,
+        provider: this.provider,
         model: this.model,
         effort: this.effort,
         projectRoot: this.projectRoot,
@@ -66,6 +117,8 @@ class Orchestrator {
         currentSummary,
         priorFixes,
         maxAttempts: this.maxAttempts,
+        budget: this.budget,
+        contextOptions: this.contextOptions,
       });
 
       const result = await session.run();
@@ -98,8 +151,8 @@ class Orchestrator {
       queue = buildQueue(currentSummary);
     }
 
-    if (queue.length > 0 && bugNum >= MAX_BUG_SESSIONS) {
-      this.logger.harness(`session cap (${MAX_BUG_SESSIONS}) reached with ${queue.length} failing test(s) remaining`);
+    if (queue.length > 0 && bugNum >= this.maxBugSessions) {
+      this.logger.harness(`session cap (${this.maxBugSessions}) reached with ${queue.length} failing test(s) remaining`);
     }
 
     const report = this.buildReport(sessions, currentSummary, Math.round((Date.now() - startedAt) / 1000));
@@ -122,6 +175,8 @@ class Orchestrator {
       usage: this.logger.structure.usage,
       durationSeconds,
       events: this.logger.structure.events,
+      manifest: this.manifest,
+      budget: this.budget ? this.budget.summary() : null,
     });
   }
 
