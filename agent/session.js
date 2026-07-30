@@ -65,7 +65,7 @@ class BugSession {
       switch (name) {
         case 'list_files': {
           const entries = fo.listFiles(input.directory || '.');
-          return { text: entries.map((e) => (e.type === 'dir' ? e.name : `${e.name} (${e.size} bytes)`)).join('\n') || '(empty)' };
+          return { text: entries.map((e) => e.name).join('\n') || '(empty)' };
         }
         case 'read_file':
           return { text: fo.readFile(input.path) };

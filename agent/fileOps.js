@@ -135,11 +135,11 @@ class FileOps {
     for (const e of fs.readdirSync(abs, { withFileTypes: true })) {
       const childRel = rel === '' || rel === '.' ? e.name : `${rel}/${e.name}`;
       if (!isVisible(childRel)) continue;
-      if (e.isDirectory()) {
-        entries.push({ name: e.name + '/', type: 'dir' });
-      } else {
-        entries.push({ name: e.name, type: 'file', size: fs.statSync(path.join(abs, e.name)).size });
-      }
+      // Deliberately no file size: it is noise for debugging, and it made tool
+      // output vary with unrelated repo edits, which broke replay fixtures.
+      entries.push(
+        e.isDirectory() ? { name: e.name + '/', type: 'dir' } : { name: e.name, type: 'file' }
+      );
     }
     entries.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
     return entries;

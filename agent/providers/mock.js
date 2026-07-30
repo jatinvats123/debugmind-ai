@@ -31,6 +31,39 @@ function hashRequest({ system, toolDefs, contents }) {
   return crypto.createHash('sha256').update(shape).digest('hex').slice(0, 16);
 }
 
+/**
+ * Per-entry hashes of the conversation. Stored alongside the whole-request hash
+ * so that when a cassette drifts, the mismatch can be localised to a single
+ * turn instead of reported as an opaque whole-request difference — the
+ * difference between "something changed" and "tool result X changed".
+ */
+function hashParts(contents) {
+  return (contents || []).map((entry) =>
+    crypto.createHash('sha256').update(JSON.stringify(entry)).digest('hex').slice(0, 12)
+  );
+}
+
+/** First index at which two hash lists differ, or -1 when one is simply longer. */
+function firstDivergence(recorded, actual) {
+  const len = Math.min(recorded.length, actual.length);
+  for (let i = 0; i < len; i++) {
+    if (recorded[i] !== actual[i]) return i;
+  }
+  return recorded.length === actual.length ? -1 : len;
+}
+
+/** Human-readable summary of a conversation entry, for drift messages. */
+function describeEntry(entry) {
+  if (!entry || !Array.isArray(entry.parts)) return String(entry && entry.role);
+  const bits = entry.parts.map((p) => {
+    if (p.functionCall) return `call:${p.functionCall.name}`;
+    if (p.functionResponse) return `result:${p.functionResponse.name}`;
+    if (p.text) return `text(${p.text.length} chars)`;
+    return 'part';
+  });
+  return `${entry.role}[${bits.join(', ')}]`;
+}
+
 function hashText(text) {
   return crypto.createHash('sha256').update(String(text)).digest('hex').slice(0, 16);
 }
@@ -89,9 +122,25 @@ class MockProvider extends LLMProvider {
     const actual = hashRequest(request);
 
     if (turn.requestHash && turn.requestHash !== actual) {
-      const detail =
+      let detail =
         `Cassette drift at turn ${this.cursor}: recorded request ${turn.requestHash}, got ${actual}. ` +
         'The harness produced different observations than when this fixture was recorded.';
+
+      // Localise the divergence so the cause is actionable.
+      if (Array.isArray(turn.requestParts)) {
+        const actualParts = hashParts(request.contents);
+        const idx = firstDivergence(turn.requestParts, actualParts);
+        if (idx === -1) {
+          detail += ' Conversation entries all match — the difference is in the system prompt or tool schemas.';
+        } else if (idx >= turn.requestParts.length || idx >= actualParts.length) {
+          detail += ` Conversation length differs (recorded ${turn.requestParts.length} entries, got ${actualParts.length}).`;
+        } else {
+          detail +=
+            ` First divergence at conversation entry ${idx} (${describeEntry(request.contents[idx])}): ` +
+            `recorded ${turn.requestParts[idx]}, got ${actualParts[idx]}.`;
+        }
+      }
+
       if (this.matchMode === 'strict') throw new Error(detail);
       this.drift.push(detail);
     }
@@ -142,7 +191,11 @@ class RecordingProvider extends LLMProvider {
   }
 
   _record(request, response) {
-    this.turns.push({ requestHash: hashRequest(request), response });
+    this.turns.push({
+      requestHash: hashRequest(request),
+      requestParts: hashParts(request.contents),
+      response,
+    });
     this.flush();
     return response;
   }
@@ -166,4 +219,4 @@ class RecordingProvider extends LLMProvider {
   }
 }
 
-module.exports = { MockProvider, RecordingProvider, hashRequest, hashText };
+module.exports = { MockProvider, RecordingProvider, hashRequest, hashParts, hashText, firstDivergence };
