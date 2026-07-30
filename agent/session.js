@@ -3,12 +3,17 @@ const { SYSTEM_PROMPT, buildIntakeMessage } = require('./prompts');
 const { runJest, runSpecificTest, summarizeForModel } = require('./testRunner');
 const { getCallGraph } = require('./callGraph');
 const { runSnippet } = require('./snippet');
+const { pruneContents } = require('./context');
 
 const MAX_TURNS = 45;
 
 class BugSession {
-  constructor({ client, model, effort, projectRoot, fileOps, logger, bugNum, target, currentSummary, priorFixes, maxAttempts = 4 }) {
-    this.client = client;
+  constructor({ client, provider, model, effort, projectRoot, fileOps, logger, bugNum, target, currentSummary, priorFixes, maxAttempts = 4, budget = null, contextOptions = {} }) {
+    // `provider` is the LLMProvider; `client` accepted as a legacy alias.
+    this.provider = provider || client;
+    this.client = this.provider;
+    this.budget = budget;
+    this.contextOptions = contextOptions;
     this.model = model;
     this.effort = effort;
     this.projectRoot = projectRoot;
@@ -393,33 +398,52 @@ class BugSession {
     const contents = [{ role: 'user', parts: [{ text: intake }] }];
 
     for (let turn = 1; turn <= MAX_TURNS; turn++) {
+      // Ceilings are checked before spending, so an exhausted budget ends the
+      // run cleanly instead of draining a quota mid-session.
+      if (this.budget) {
+        const violation = this.budget.check();
+        if (violation) {
+          this.logger.harness(`BUDGET EXCEEDED (${violation.limit}): ${violation.detail} — closing session`);
+          return this.forceReview(`Budget exceeded (${violation.limit}): ${violation.detail}`);
+        }
+      }
+
+      const pruning = pruneContents(contents, this.contextOptions);
+      if (pruning.pruned) {
+        this.logger.harness(
+          `context pruned: ${pruning.elidedParts} bulky tool result(s) elided (${pruning.originalChars} -> ${pruning.prunedChars} chars)`,
+          { elidedParts: pruning.elidedParts }
+        );
+      }
+
       let res;
       try {
-        res = await this.client.chat({ system: SYSTEM_PROMPT, toolDefs: TOOL_DEFINITIONS, contents });
+        res = await this.provider.generateWithTools({
+          system: SYSTEM_PROMPT,
+          toolDefs: TOOL_DEFINITIONS,
+          contents: pruning.contents,
+        });
       } catch (e) {
         this.logger.harness(`API error: ${e.message} — aborting session`);
         return this.forceReview(`API failure: ${e.message}`);
       }
 
       this.logger.usage(res.usage);
-      const candidate = res.candidate;
-      const parts = (candidate && candidate.content && candidate.content.parts) || [];
+      if (this.budget) this.budget.record(res.usage, { bug: this.bugNum, turn });
 
-      for (const p of parts) {
-        if (p.thought && p.text) this.logger.modelThinking(p.text);
-        else if (p.text) this.logger.modelText(p.text);
-      }
+      for (const t of res.thoughts || []) this.logger.modelThinking(t);
+      if (res.text) this.logger.modelText(res.text);
 
-      const finishReason = candidate && candidate.finishReason;
+      const finishReason = res.finishReason;
       if (finishReason === 'SAFETY' || finishReason === 'PROHIBITED_CONTENT' || finishReason === 'RECITATION') {
         this.logger.harness(`model response blocked (${finishReason}) — aborting session`);
         return this.forceReview(`Model response blocked: ${finishReason}.`);
       }
 
-      const functionCalls = parts.filter((p) => p.functionCall).map((p) => p.functionCall);
+      const toolCalls = res.toolCalls || [];
 
-      if (functionCalls.length === 0) {
-        if (candidate && candidate.content) contents.push(candidate.content);
+      if (toolCalls.length === 0) {
+        if (res.raw) contents.push(res.raw);
         const nudge =
           finishReason === 'MAX_TOKENS'
             ? '[HARNESS] Your response was truncated by the token limit. Continue more concisely.'
@@ -428,22 +452,22 @@ class BugSession {
         continue;
       }
 
-      contents.push(candidate.content);
+      contents.push(res.raw);
 
       const responseParts = [];
       let finished = null;
-      for (const fc of functionCalls) {
-        const input = fc.args || {};
-        this.logger.toolCall(fc.name, input);
+      for (const call of toolCalls) {
+        const input = call.args || {};
+        this.logger.toolCall(call.name, input);
         const result = finished
           ? { text: '[HARNESS] Session already finished; call ignored.', isError: true }
-          : this.executeTool(fc.name, input);
-        this.logger.toolResult(fc.name, result.text, !!result.isError);
+          : this.executeTool(call.name, input);
+        this.logger.toolResult(call.name, result.text, !!result.isError);
         const fr = {
-          name: fc.name,
+          name: call.name,
           response: result.isError ? { error: result.text } : { result: result.text },
         };
-        if (fc.id) fr.id = fc.id;
+        if (call.id) fr.id = call.id;
         responseParts.push({ functionResponse: fr });
         if (result.finish) finished = result.finish;
       }
