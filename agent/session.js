@@ -34,6 +34,12 @@ class BugSession {
     this.harnessForcedReview = false;
     this.verificationRuns = 0;
     this.snippetProbes = 0;
+    this.isolatedTestRuns = 0;
+    this.tamperEvents = 0;
+    // Evidence watermarks: a confirmation may only cite work done AFTER the
+    // hypotheses it confirms were recorded, so stale evidence cannot be reused.
+    this.probesAtLastHypothesis = 0;
+    this.isolatedRunsAtLastHypothesis = 0;
   }
 
   // ---------- verdict computation ----------
@@ -75,6 +81,7 @@ class BugSession {
           if (summary.numTotalTests === 0) {
             return { text: `No tests matched "${input.testName}". Use the exact name from the failure output.`, isError: true };
           }
+          this.isolatedTestRuns += 1;
           return { text: summarizeForModel(summary) };
         }
         case 'run_snippet': {
@@ -83,6 +90,23 @@ class BugSession {
           const parts = [`exit code: ${res.exitCode}${res.timedOut ? ' (TIMED OUT)' : ''}`];
           if (res.stdout) parts.push(`--- stdout ---\n${res.stdout}`);
           if (res.stderr) parts.push(`--- stderr ---\n${res.stderr}`);
+          if (res.tampered) {
+            // Ground truth was modified by a probe. Treat as a protocol violation:
+            // any result derived from a mutated suite is worthless.
+            this.tamperEvents += 1;
+            this.logger.harness(`INTEGRITY VIOLATION — ${res.tamperDetail}`, { tool: 'run_snippet' });
+            parts.push(
+              '\n[HARNESS] INTEGRITY VIOLATION: this probe modified tests/ or package.json. ' +
+                'Those files are read-only ground truth. The violation is recorded in the run log; ' +
+                'probes must only observe behaviour, never write. Re-run a read-only probe.'
+            );
+            return { text: parts.join('\n'), isError: true };
+          }
+          if (!res.sandboxed) {
+            parts.push(
+              `\n[HARNESS] Note: probe ran unsandboxed (Node ${process.versions.node} predates the permission model); integrity verified by hash instead.`
+            );
+          }
           return { text: parts.join('\n') };
         }
         case 'diff_check': {
@@ -208,6 +232,9 @@ class BugSession {
     }
     this.hypotheses.push(...hs);
     this.logger.hypotheses(hs);
+    // Evidence cited by a later confirmation must post-date these hypotheses.
+    this.probesAtLastHypothesis = this.snippetProbes;
+    this.isolatedRunsAtLastHypothesis = this.isolatedTestRuns;
     return {
       text: `Recorded ${hs.length} hypotheses (${hs.map((h) => h.id).join(', ')}). Next: verify the leading one non-destructively (run_snippet / run_specific_test) before editing.`,
     };
@@ -221,11 +248,40 @@ class BugSession {
         isError: true,
       };
     }
-    this.confirmations.push({ ...input, at: new Date().toISOString() });
+    // The verification METHOD drives the confidence score in the final report, so
+    // the harness checks the claim against work it actually observed rather than
+    // taking the model's word for it.
+    const newProbes = this.snippetProbes - this.probesAtLastHypothesis;
+    const newIsolatedRuns = this.isolatedTestRuns - this.isolatedRunsAtLastHypothesis;
+    if (input.method === 'snippet_probe' && newProbes === 0) {
+      return {
+        text:
+          '[HARNESS GUARD] method="snippet_probe" rejected: no run_snippet probe has executed since these hypotheses were recorded. ' +
+          'Run the probe that demonstrates the mechanism, then confirm citing its output — or confirm with method="code_reading" and accept the lower confidence.',
+        isError: true,
+      };
+    }
+    if (input.method === 'isolated_test' && newIsolatedRuns === 0) {
+      return {
+        text:
+          '[HARNESS GUARD] method="isolated_test" rejected: no run_specific_test has executed since these hypotheses were recorded.',
+        isError: true,
+      };
+    }
+
+    this.confirmations.push({
+      ...input,
+      at: new Date().toISOString(),
+      // Recorded so the report can prove the method was corroborated, not asserted.
+      evidenceObserved: { probesSinceHypotheses: newProbes, isolatedRunsSinceHypotheses: newIsolatedRuns },
+      methodVerifiedByHarness: input.method !== 'code_reading',
+    });
     this.logger.confirmation(input);
     let note = `Hypothesis ${input.id} confirmed. edit_file is now unlocked.`;
     if (input.method === 'code_reading') {
       note += ' (Confirmed by code reading only — consider a run_snippet probe for stronger evidence, and calibrate final confidence accordingly.)';
+    } else {
+      note += ` (Harness corroborated: ${newProbes} probe(s) and ${newIsolatedRuns} isolated test run(s) since these hypotheses were recorded.)`;
     }
     return { text: note };
   }
@@ -448,6 +504,8 @@ class BugSession {
         failedAttempts: this.attempts,
         verificationRuns: this.verificationRuns,
         snippetProbes: this.snippetProbes,
+        isolatedTestRuns: this.isolatedTestRuns,
+        tamperEvents: this.tamperEvents,
       },
     };
   }
