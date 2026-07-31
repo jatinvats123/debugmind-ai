@@ -5,3 +5,5 @@ node_modules/
 .agent-snippet.js
 .bench-workspace*/
 benchmark/logs/
+debug-trace.jsonl
+debug-trace.html

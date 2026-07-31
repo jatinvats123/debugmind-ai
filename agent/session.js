@@ -433,6 +433,7 @@ class BugSession {
       }
 
       let res;
+      const turnStartedAt = Date.now();
       try {
         res = await this.provider.generateWithTools({
           system: this.systemPrompt,
@@ -444,7 +445,7 @@ class BugSession {
         return this.forceReview(`API failure: ${e.message}`);
       }
 
-      this.logger.usage(res.usage);
+      this.logger.usage(res.usage, Date.now() - turnStartedAt);
       if (this.budget) this.budget.record(res.usage, { bug: this.bugNum, turn });
 
       for (const t of res.thoughts || []) this.logger.modelThinking(t);
@@ -475,10 +476,11 @@ class BugSession {
       for (const call of toolCalls) {
         const input = call.args || {};
         this.logger.toolCall(call.name, input);
+        const toolStartedAt = Date.now();
         const result = finished
           ? { text: '[HARNESS] Session already finished; call ignored.', isError: true }
           : this.executeTool(call.name, input);
-        this.logger.toolResult(call.name, result.text, !!result.isError);
+        this.logger.toolResult(call.name, result.text, !!result.isError, Date.now() - toolStartedAt);
         const fr = {
           name: call.name,
           response: result.isError ? { error: result.text } : { result: result.text },

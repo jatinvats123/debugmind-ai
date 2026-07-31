@@ -32,9 +32,15 @@ function truncate(str, max) {
 }
 
 class Logger {
-  constructor(projectRoot, logFileName = 'debug-log.json') {
+  constructor(projectRoot, logFileName = 'debug-log.json', traceFileName = 'debug-trace.jsonl') {
     this.projectRoot = projectRoot;
     this.logPath = path.join(projectRoot, logFileName);
+    // Append-only companion to the JSON log: one event per line, written as it
+    // happens. Streamable (tail -f), diffable, and greppable, and it survives a
+    // crash that would leave the aggregate document half-written.
+    this.tracePath = path.join(projectRoot, traceFileName);
+    fs.writeFileSync(this.tracePath, '');
+    this.runStartedAt = Date.now();
     this.seq = 0;
     this.structure = {
       run: null,
@@ -64,14 +70,26 @@ class Logger {
     const evt = {
       seq: ++this.seq,
       t: new Date().toISOString(),
+      // Milliseconds since the run began — the axis the trace viewer plots.
+      elapsedMs: Date.now() - this.runStartedAt,
       bug: this.currentBug,
       phase: this.currentPhase,
       type,
       ...data,
     };
     this.structure.events.push(evt);
+    this.appendTrace(evt);
     this.flush();
     return evt;
+  }
+
+  /** One JSON object per line, appended. Never rewrites what is already on disk. */
+  appendTrace(evt) {
+    try {
+      fs.appendFileSync(this.tracePath, JSON.stringify(evt) + '\n');
+    } catch {
+      /* tracing must never take down a run */
+    }
   }
 
   // ---- console helpers ----
@@ -152,13 +170,15 @@ class Logger {
     this.event('tool_call', { tool: name, input });
   }
 
-  toolResult(name, result, isError = false) {
+  toolResult(name, result, isError = false, durationMs = null) {
     const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
     const color = isError ? C.red : C.gray;
-    console.log(`  ${color}← ${truncate(resultStr, 300)}${C.reset}`);
+    const timing = durationMs != null && durationMs >= 1000 ? ` ${C.gray}(${(durationMs / 1000).toFixed(1)}s)${C.reset}` : '';
+    console.log(`  ${color}← ${truncate(resultStr, 300)}${C.reset}${timing}`);
     this.event('tool_result', {
       tool: name,
       isError,
+      durationMs,
       result: truncate(resultStr, 20000),
     });
   }
@@ -227,12 +247,22 @@ class Logger {
     this.event('cross_bug_check', check);
   }
 
-  usage(u) {
+  usage(u, durationMs = null) {
     this.structure.usage.apiCalls += 1;
     this.structure.usage.inputTokens += u.input_tokens || 0;
     this.structure.usage.outputTokens += u.output_tokens || 0;
     this.structure.usage.cacheReadTokens += u.cache_read_input_tokens || 0;
     this.structure.usage.cacheWriteTokens += u.cache_creation_input_tokens || 0;
+    // Per-call cost/latency is only visible if it is recorded per call; the
+    // run-level totals alone cannot tell you which step was expensive.
+    this.event('model_turn', {
+      durationMs,
+      inputTokens: u.input_tokens || 0,
+      outputTokens: u.output_tokens || 0,
+      cacheReadTokens: u.cache_read_input_tokens || 0,
+      cumulativeTokens: this.structure.usage.inputTokens + this.structure.usage.outputTokens,
+      cumulativeApiCalls: this.structure.usage.apiCalls,
+    });
     this.flush();
   }
 

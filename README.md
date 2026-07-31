@@ -24,7 +24,13 @@ DebugMind enforces a debugging protocol **in the harness, not the prompt**. The 
 | Don't trust the agent's word | `finish_bug("fixed")` triggers an independent full-suite re-run; a false claim is demoted to a failed attempt |
 | Know when to stop | 4 failed attempts → forced `needs_human_review`, repo restored to baseline |
 
-Every hypothesis, probe, edit, revert and verdict is streamed to the console and written to a structured `debug-log.json`.
+Every hypothesis, probe, edit, revert and verdict is streamed to the console, appended to a JSONL trace as it happens, and summarised in a report that includes a per-bug **evidence trail** — what the agent read, what it observed at runtime, and what turned a guess into a confirmed diagnosis.
+
+```bash
+npm run trace:view       # render the last run as a self-contained HTML timeline
+```
+
+The viewer is a single file with no server, framework, or network access — open it from disk or attach it to a bug report. Example: [`docs/examples/sample-trace.html`](docs/examples/sample-trace.html) ([raw JSONL](docs/examples/sample-trace.jsonl)).
 
 ## Measured results
 
