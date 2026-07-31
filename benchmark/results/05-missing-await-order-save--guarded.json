@@ -1,0 +1,28 @@
+{
+  "fixtureId": "05-missing-await-order-save",
+  "category": "async-await-misuse",
+  "difficulty": "medium",
+  "expectedResolution": "fixed",
+  "arm": "guarded",
+  "outcome": "resolved",
+  "correct": true,
+  "targetTestsFixed": true,
+  "regressions": [],
+  "regressionCount": 0,
+  "testsTampered": false,
+  "bugSessions": 1,
+  "attempts": 1,
+  "probes": 2,
+  "hypotheses": 2,
+  "wallClockSeconds": 209,
+  "tokens": 196652,
+  "apiCalls": 18,
+  "estimatedCostUsd": null,
+  "budgetAborted": null,
+  "finalTests": {
+    "passed": 54,
+    "failed": 0,
+    "total": 54
+  },
+  "error": null
+}

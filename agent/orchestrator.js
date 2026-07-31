@@ -6,7 +6,7 @@ const { runJest } = require('./testRunner');
 const { C } = require('./logger');
 const { buildReport, renderMarkdown } = require('./report');
 const { buildManifest } = require('./manifest');
-const { SYSTEM_PROMPT } = require('./prompts');
+const { SYSTEM_PROMPT, UNGUARDED_SYSTEM_PROMPT } = require('./prompts');
 const { TOOL_DEFINITIONS } = require('./tools');
 
 const MAX_BUG_SESSIONS = 6;
@@ -24,6 +24,7 @@ class Orchestrator {
     budget = null,
     contextOptions = {},
     maxBugSessions = MAX_BUG_SESSIONS,
+    guarded = true,
   }) {
     this.provider = provider || client;
     this.client = this.provider;
@@ -36,7 +37,9 @@ class Orchestrator {
     this.budget = budget;
     this.contextOptions = contextOptions;
     this.maxBugSessions = maxBugSessions;
-    this.fileOps = new FileOps(projectRoot);
+    this.guarded = guarded;
+    // The unguarded control arm may edit tests; the guarded agent never can.
+    this.fileOps = new FileOps(projectRoot, { allowTestEdits: !guarded });
   }
 
   async run() {
@@ -55,11 +58,12 @@ class Orchestrator {
     const manifest = await buildManifest({
       projectRoot: this.projectRoot,
       provider: this.provider,
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt: this.guarded ? SYSTEM_PROMPT : UNGUARDED_SYSTEM_PROMPT,
       toolDefs: TOOL_DEFINITIONS,
       config: {
         maxAttempts: this.maxAttempts,
         maxBugSessions: this.maxBugSessions,
+        guarded: this.guarded,
         targetFilter: this.targetFilter,
         budgetLimits: this.budget ? this.budget.limits : null,
         contextOptions: this.contextOptions,
@@ -119,6 +123,7 @@ class Orchestrator {
         maxAttempts: this.maxAttempts,
         budget: this.budget,
         contextOptions: this.contextOptions,
+        guarded: this.guarded,
       });
 
       const result = await session.run();

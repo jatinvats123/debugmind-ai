@@ -1,0 +1,28 @@
+{
+  "fixtureId": "08-wrong-comparison-stock",
+  "category": "wrong-comparison-operator",
+  "difficulty": "easy",
+  "expectedResolution": "fixed",
+  "arm": "guarded",
+  "outcome": "resolved",
+  "correct": true,
+  "targetTestsFixed": true,
+  "regressions": [],
+  "regressionCount": 0,
+  "testsTampered": false,
+  "bugSessions": 1,
+  "attempts": 1,
+  "probes": 1,
+  "hypotheses": 2,
+  "wallClockSeconds": 69,
+  "tokens": 64244,
+  "apiCalls": 10,
+  "estimatedCostUsd": null,
+  "budgetAborted": null,
+  "finalTests": {
+    "passed": 54,
+    "failed": 0,
+    "total": 54
+  },
+  "error": null
+}

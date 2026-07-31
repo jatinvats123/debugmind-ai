@@ -1,0 +1,28 @@
+{
+  "fixtureId": "11-shared-state-product-mutation",
+  "category": "shared-state-mutation",
+  "difficulty": "hard",
+  "expectedResolution": "fixed",
+  "arm": "unguarded",
+  "outcome": "resolved",
+  "correct": true,
+  "targetTestsFixed": true,
+  "regressions": [],
+  "regressionCount": 0,
+  "testsTampered": false,
+  "bugSessions": 1,
+  "attempts": 1,
+  "probes": 3,
+  "hypotheses": 2,
+  "wallClockSeconds": 104,
+  "tokens": 339825,
+  "apiCalls": 26,
+  "estimatedCostUsd": null,
+  "budgetAborted": null,
+  "finalTests": {
+    "passed": 54,
+    "failed": 0,
+    "total": 54
+  },
+  "error": null
+}

@@ -12,7 +12,11 @@
     "agent:record": "node agent/index.js --restore --record --cassette fixtures/three-bug-run.cassette.json",
     "snapshot-bugs": "node scripts/snapshot-bugs.js",
     "restore-bugs": "node scripts/restore-bugs.js",
-    "regenerate-report": "node scripts/regenerate-report.js"
+    "regenerate-report": "node scripts/regenerate-report.js",
+    "bench": "node benchmark/bench.js",
+    "bench:validate": "node benchmark/validate.js",
+    "bench:report": "node benchmark/bench.js --regenerate",
+    "trace:view": "node scripts/trace-view.js"
   },
   "dependencies": {
     "@google/genai": "^2.11.0",
@@ -24,5 +28,13 @@
   "devDependencies": {
     "jest": "^29.7.0",
     "supertest": "^6.3.4"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/benchmark/",
+      "/.bench-workspace"
+    ]
   }
 }

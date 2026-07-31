@@ -136,6 +136,105 @@ function rateDifficulty(session, events) {
   return { rating, justification };
 }
 
+// ---------- evidence trail ----------
+
+/**
+ * Reconstruct *why the agent believed what it believed*, in order.
+ *
+ * The report already says what the root cause was. This answers the question a
+ * reviewer actually asks next — what did it look at, what did it observe at
+ * runtime, and what turned a guess into a confirmed diagnosis. It is assembled
+ * from logged events rather than from the model's own summary, so it reflects
+ * what happened rather than what the model says happened.
+ */
+function extractEvidenceTrail(session, events) {
+  const own = (events || []).filter((e) => e.bug === session.bugNum);
+  const trail = [];
+
+  trail.push({
+    step: 'symptom',
+    detail: `\`${session.target.fullName}\` failed in ${session.target.file}`,
+    note: (session.target.message || '').split('\n').find((l) => l.trim()) || '',
+  });
+
+  const filesRead = [
+    ...new Set(
+      own
+        .filter((e) => e.type === 'tool_call' && e.tool === 'read_file' && e.input && e.input.path)
+        .map((e) => e.input.path)
+    ),
+  ];
+  const graphQueries = own
+    .filter((e) => e.type === 'tool_call' && e.tool === 'get_call_graph')
+    .map((e) => e.input && e.input.functionName)
+    .filter(Boolean);
+  const searches = own
+    .filter((e) => e.type === 'tool_call' && e.tool === 'search_codebase')
+    .map((e) => e.input && e.input.query)
+    .filter(Boolean);
+
+  if (filesRead.length || graphQueries.length || searches.length) {
+    const bits = [];
+    if (filesRead.length) bits.push(`read ${filesRead.map((f) => `\`${f}\``).join(', ')}`);
+    if (graphQueries.length) bits.push(`traced call graph for ${graphQueries.map((f) => `\`${f}\``).join(', ')}`);
+    if (searches.length) bits.push(`searched for ${searches.map((q) => `\`${q}\``).join(', ')}`);
+    trail.push({ step: 'exploration', detail: bits.join('; ') });
+  }
+
+  for (const h of session.protocol.hypotheses || []) {
+    trail.push({
+      step: `hypothesis ${h.id}`,
+      detail: `(${h.likelihood}) ${h.summary}`,
+      note: `${h.suspected_location} — ${h.reasoning}`,
+    });
+  }
+
+  // Probes are the load-bearing evidence: what the agent actually observed.
+  const probes = own.filter((e) => e.type === 'tool_call' && e.tool === 'run_snippet');
+  const probeResults = own.filter((e) => e.type === 'tool_result' && e.tool === 'run_snippet');
+  probes.forEach((probe, i) => {
+    const output = probeResults[i] ? String(probeResults[i].result || '') : '';
+    const stdout = output.split('--- stdout ---')[1] || output;
+    trail.push({
+      step: 'probe',
+      detail: (probe.input && probe.input.purpose) || 'ran a non-destructive probe',
+      observed: stdout.trim().split('\n').slice(0, 4).join('\n').slice(0, 400),
+    });
+  });
+
+  for (const c of session.protocol.confirmations || []) {
+    const corroborated = c.evidenceObserved
+      ? ` (harness observed ${c.evidenceObserved.probesSinceHypotheses} probe(s), ${c.evidenceObserved.isolatedRunsSinceHypotheses} isolated run(s) after the hypotheses were recorded)`
+      : '';
+    trail.push({
+      step: `confirmed ${c.id}`,
+      detail: `via ${c.method}${c.methodVerifiedByHarness ? ', corroborated by the harness' : ', self-reported'}${corroborated}`,
+      note: c.evidence,
+    });
+  }
+
+  for (const l of session.protocol.learnings || []) {
+    trail.push({
+      step: 'failed attempt → learning',
+      detail: l.failed_attempt_summary,
+      note: `ruled out: ${l.what_it_rules_out} · revised: ${l.revised_thinking}`,
+    });
+  }
+
+  for (const f of own.filter((e) => e.type === 'fix_applied')) {
+    trail.push({ step: 'fix', detail: `edited \`${f.file}\``, note: f.reason });
+  }
+
+  if (session.validation) {
+    trail.push({
+      step: 'verification',
+      detail: `target test passes with zero regressions, re-checked independently (${session.validation.validatedBy})`,
+    });
+  }
+
+  return trail;
+}
+
 // ---------- report assembly ----------
 
 function buildReport({ sessions, finalTestState, usage, durationSeconds, events, completedAt, manifest = null, budget = null }) {
@@ -157,6 +256,7 @@ function buildReport({ sessions, finalTestState, usage, durationSeconds, events,
       difficulty: rateDifficulty(s, events),
       confidenceScore: computeConfidenceScore(s),
       diffs: extractDiffs(s, events),
+      evidenceTrail: extractEvidenceTrail(s, events),
       hypothesesConsidered: (s.protocol.hypotheses || []).map((h) => ({
         ...h,
         outcome: (s.protocol.confirmations || []).some((c) => c.id === h.id)
@@ -254,6 +354,24 @@ function renderMarkdown(report) {
         L.push(`  - revised thinking: ${l.revised_thinking}`);
       }
     }
+    if (b.evidenceTrail && b.evidenceTrail.length > 0) {
+      L.push('');
+      L.push('<details><summary><b>Why the agent believed this</b> — evidence trail</summary>');
+      L.push('');
+      b.evidenceTrail.forEach((entry, i) => {
+        L.push(`${i + 1}. **${entry.step}** — ${entry.detail}`);
+        if (entry.note) L.push(`   - ${entry.note}`);
+        if (entry.observed) {
+          L.push('   - observed:');
+          L.push('     ```');
+          for (const line of String(entry.observed).split('\n')) L.push(`     ${line}`);
+          L.push('     ```');
+        }
+      });
+      L.push('');
+      L.push('</details>');
+    }
+
     L.push('');
     L.push('**Verification methods:**');
     for (const v of b.verificationMethods) L.push(`- ${v}`);

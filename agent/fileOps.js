@@ -52,8 +52,16 @@ function isVisible(relPath) {
 }
 
 class FileOps {
-  constructor(projectRoot) {
+  /**
+   * @param {string} projectRoot
+   * @param {object} [options]
+   * @param {boolean} [options.allowTestEdits] Widen the edit allow-list to
+   *   include tests/. Only the unguarded benchmark arm sets this — it is the
+   *   control condition being measured, never a convenience for the real agent.
+   */
+  constructor(projectRoot, { allowTestEdits = false } = {}) {
     this.projectRoot = projectRoot;
+    this.allowTestEdits = allowTestEdits;
     this.agentStartOriginals = new Map(); // relPath -> content at agent start
     this.sessionOriginals = new Map(); // relPath -> content at bug-session start
     this.revertStacks = new Map(); // relPath -> [contentBeforeEdit1, contentBeforeEdit2, ...]
@@ -88,8 +96,13 @@ class FileOps {
 
   _editableFiles() {
     const out = [];
-    const srcDir = path.join(this.projectRoot, 'src');
-    if (fs.existsSync(srcDir)) {
+    const roots = ['src'];
+    // Tracked so that test edits are snapshotted, revertable and visible to
+    // modifiedSinceSessionStart — otherwise unguarded tampering would be invisible.
+    if (this.allowTestEdits) roots.push('tests');
+    for (const root of roots) {
+      const srcDir = path.join(this.projectRoot, root);
+      if (!fs.existsSync(srcDir)) continue;
       const stack = [srcDir];
       while (stack.length) {
         const dir = stack.pop();
@@ -200,7 +213,8 @@ class FileOps {
 
   editFile(relPath, changes, { requireEditable = true } = {}) {
     const { abs, rel } = this.resolve(relPath);
-    if (requireEditable && !isEditable(rel)) {
+    const editable = isEditable(rel) || (this.allowTestEdits && normalizeForGuard(rel).startsWith('tests/'));
+    if (requireEditable && !editable) {
       throw new Error(
         `Editing "${rel}" is not allowed. Tests define expected behavior and are read-only ground truth; ` +
           `only application source files (src/**, server.js) may be edited.`

@@ -6,6 +6,7 @@
  *   node agent/index.js [options]
  *
  *   --restore                 restore the buggy baseline before running
+ *   --unguarded               DISABLE the guardrails (benchmark control arm only)
  *   --provider gemini|mock    backend (default gemini; mock needs no API key)
  *   --cassette <path>         cassette to replay (mock) or record into
  *   --record                  record this run's provider turns to --cassette
@@ -44,6 +45,7 @@ function loadDotEnv() {
 
 const FLAGS = {
   '--restore': (a) => (a.restore = true),
+  '--unguarded': (a) => (a.guarded = false),
   '--record': (a) => (a.record = true),
   '--provider': (a, v) => (a.provider = v),
   '--cassette': (a, v) => (a.cassette = v),
@@ -63,6 +65,7 @@ function parseArgs(argv) {
   const args = {
     restore: false,
     record: false,
+    guarded: true,
     provider: process.env.AGENT_PROVIDER || 'gemini',
     cassette: null,
     target: null,
@@ -160,6 +163,7 @@ async function main() {
     logger,
     maxAttempts: args.maxAttempts,
     targetFilter: args.target,
+    guarded: args.guarded,
     budget,
     maxBugSessions: args.maxBugs,
   });

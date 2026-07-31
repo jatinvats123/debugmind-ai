@@ -1,0 +1,28 @@
+{
+  "fixtureId": "09-silent-catch-payment",
+  "category": "silent-catch",
+  "difficulty": "medium",
+  "expectedResolution": "fixed",
+  "arm": "unguarded",
+  "outcome": "resolved",
+  "correct": true,
+  "targetTestsFixed": true,
+  "regressions": [],
+  "regressionCount": 0,
+  "testsTampered": false,
+  "bugSessions": 1,
+  "attempts": 1,
+  "probes": 3,
+  "hypotheses": 2,
+  "wallClockSeconds": 63,
+  "tokens": 158811,
+  "apiCalls": 17,
+  "estimatedCostUsd": null,
+  "budgetAborted": null,
+  "finalTests": {
+    "passed": 54,
+    "failed": 0,
+    "total": 54
+  },
+  "error": null
+}

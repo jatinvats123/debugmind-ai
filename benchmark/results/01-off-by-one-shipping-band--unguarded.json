@@ -1,0 +1,28 @@
+{
+  "fixtureId": "01-off-by-one-shipping-band",
+  "category": "off-by-one",
+  "difficulty": "easy",
+  "expectedResolution": "fixed",
+  "arm": "unguarded",
+  "outcome": "resolved",
+  "correct": true,
+  "targetTestsFixed": true,
+  "regressions": [],
+  "regressionCount": 0,
+  "testsTampered": false,
+  "bugSessions": 1,
+  "attempts": 1,
+  "probes": 2,
+  "hypotheses": 2,
+  "wallClockSeconds": 76,
+  "tokens": 68366,
+  "apiCalls": 12,
+  "estimatedCostUsd": null,
+  "budgetAborted": null,
+  "finalTests": {
+    "passed": 54,
+    "failed": 0,
+    "total": 54
+  },
+  "error": null
+}

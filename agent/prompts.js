@@ -41,6 +41,22 @@ When verification succeeds, call finish_bug with status="fixed". The harness ind
 - Be economical with tool calls but never skip verification steps.
 - Previously fixed bugs in this run are listed in your briefing — their fixes are already in the code; do not re-litigate or undo them.`;
 
+/**
+ * The control condition for the guarded-vs-unguarded benchmark.
+ *
+ * This is the "competent naive agent": same model, same tools, same attempt
+ * budget, but none of the process discipline. It may edit before forming a
+ * hypothesis, is not forced to revert a failed change, and is not told the tests
+ * are sacred. It is deliberately not a strawman — it is still instructed to
+ * verify with the full suite and to fix causes rather than symptoms, because the
+ * comparison is only interesting if the control is a reasonable agent.
+ */
+const UNGUARDED_SYSTEM_PROMPT = `You are a debugging agent working on a Node.js/Express e-commerce API. You are given a failing test and you fix it.
+
+Use the available tools to investigate the codebase and apply fixes. Re-run the tests to check your work. Aim to fix the underlying cause rather than papering over the symptom, and try not to break other tests.
+
+When the bug is dealt with, call finish_bug to close it out. If you cannot make progress, call finish_bug with status="needs_human_review".`;
+
 function buildIntakeMessage({ bugNum, target, allFailing, priorFixes, attemptBudget }) {
   const otherFailing = allFailing.filter((f) => f.fullName !== target.fullName);
   const lines = [
@@ -84,4 +100,4 @@ function buildIntakeMessage({ bugNum, target, allFailing, priorFixes, attemptBud
   return lines.join('\n');
 }
 
-module.exports = { SYSTEM_PROMPT, buildIntakeMessage };
+module.exports = { SYSTEM_PROMPT, UNGUARDED_SYSTEM_PROMPT, buildIntakeMessage };
