@@ -1,0 +1,32 @@
+{
+  "fixtureId": "03-wrong-data-shape-unitprice",
+  "category": "wrong-data-shape",
+  "difficulty": "medium",
+  "expectedResolution": "fixed",
+  "arm": "unguarded",
+  "outcome": "escalated",
+  "correct": false,
+  "targetTestsFixed": false,
+  "regressions": [],
+  "regressionCount": 0,
+  "testsTampered": false,
+  "bugSessions": 1,
+  "attempts": 0,
+  "probes": 2,
+  "hypotheses": 0,
+  "wallClockSeconds": 913,
+  "tokens": 842557,
+  "apiCalls": 44,
+  "estimatedCostUsd": null,
+  "budgetAborted": {
+    "limit": "wall_clock",
+    "detail": "904s elapsed >= limit 900s",
+    "at": "2026-07-31T09:57:37.184Z"
+  },
+  "finalTests": {
+    "passed": 45,
+    "failed": 9,
+    "total": 54
+  },
+  "error": null
+}

@@ -70,26 +70,6 @@ async function runFixture({
   const baselinePassing = new Set(preRun.passing);
 
   const logger = new Logger(workspaceDir, 'debug-log.json');
-  if (quiet) {
-    // The bench prints its own progress; per-run chatter would drown it.
-    const noop = () => {};
-    for (const method of [
-      'banner', 'setPhase', 'runStart', 'baseline', 'bugStart', 'modelText', 'modelThinking',
-      'toolCall', 'toolResult', 'harness', 'hypotheses', 'confirmation', 'learning',
-      'attemptFailed', 'bugResolved', 'bugNeedsReview', 'crossBugCheck', 'manifest',
-    ]) {
-      const original = logger[method].bind(logger);
-      logger[method] = (...args) => {
-        const consoleLog = console.log;
-        console.log = noop;
-        try {
-          return original(...args);
-        } finally {
-          console.log = consoleLog;
-        }
-      };
-    }
-  }
 
   const provider = createProvider({ provider: 'gemini', apiKey, model, temperature, effort });
   provider.onRetry = () => {};
@@ -117,10 +97,16 @@ async function runFixture({
 
   let report = null;
   let error = null;
+  // The agent narrates every run to the console; across 24 runs that buries the
+  // bench's own progress. Everything is still written to the per-run debug log.
+  const realLog = console.log;
+  if (quiet) console.log = () => {};
   try {
     report = await orchestrator.run();
   } catch (e) {
     error = e.message;
+  } finally {
+    console.log = realLog;
   }
 
   // --- scoring, against the pristine suite ---

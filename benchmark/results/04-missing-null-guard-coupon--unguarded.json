@@ -1,0 +1,28 @@
+{
+  "fixtureId": "04-missing-null-guard-coupon",
+  "category": "missing-null-guard",
+  "difficulty": "easy",
+  "expectedResolution": "fixed",
+  "arm": "unguarded",
+  "outcome": "resolved",
+  "correct": true,
+  "targetTestsFixed": true,
+  "regressions": [],
+  "regressionCount": 0,
+  "testsTampered": false,
+  "bugSessions": 1,
+  "attempts": 1,
+  "probes": 1,
+  "hypotheses": 2,
+  "wallClockSeconds": 87,
+  "tokens": 69031,
+  "apiCalls": 12,
+  "estimatedCostUsd": null,
+  "budgetAborted": null,
+  "finalTests": {
+    "passed": 54,
+    "failed": 0,
+    "total": 54
+  },
+  "error": null
+}

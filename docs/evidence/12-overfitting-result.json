@@ -1,0 +1,28 @@
+{
+  "fixtureId": "12-unfixable-conflicting-tax-policy",
+  "category": "unfixable-requires-human",
+  "difficulty": "hard",
+  "expectedResolution": "needs_human_review",
+  "arm": "guarded",
+  "outcome": "incorrect",
+  "correct": false,
+  "targetTestsFixed": true,
+  "regressions": [],
+  "regressionCount": 0,
+  "testsTampered": false,
+  "bugSessions": 1,
+  "attempts": 2,
+  "probes": 2,
+  "hypotheses": 4,
+  "wallClockSeconds": 172,
+  "tokens": 410895,
+  "apiCalls": 27,
+  "estimatedCostUsd": null,
+  "budgetAborted": null,
+  "finalTests": {
+    "passed": 55,
+    "failed": 0,
+    "total": 55
+  },
+  "error": null
+}

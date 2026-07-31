@@ -1,0 +1,28 @@
+{
+  "fixtureId": "10-wrong-http-status-declined",
+  "category": "wrong-http-status",
+  "difficulty": "easy",
+  "expectedResolution": "fixed",
+  "arm": "guarded",
+  "outcome": "resolved",
+  "correct": true,
+  "targetTestsFixed": true,
+  "regressions": [],
+  "regressionCount": 0,
+  "testsTampered": false,
+  "bugSessions": 1,
+  "attempts": 1,
+  "probes": 2,
+  "hypotheses": 2,
+  "wallClockSeconds": 93,
+  "tokens": 137041,
+  "apiCalls": 13,
+  "estimatedCostUsd": null,
+  "budgetAborted": null,
+  "finalTests": {
+    "passed": 54,
+    "failed": 0,
+    "total": 54
+  },
+  "error": null
+}
