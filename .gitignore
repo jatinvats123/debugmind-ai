@@ -4,3 +4,4 @@ node_modules/
 !.env.example
 .agent-snippet.js
 .bench-workspace*/
+benchmark/logs/

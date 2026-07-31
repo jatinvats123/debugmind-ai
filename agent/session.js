@@ -1,5 +1,5 @@
 const { TOOL_DEFINITIONS } = require('./tools');
-const { SYSTEM_PROMPT, buildIntakeMessage } = require('./prompts');
+const { SYSTEM_PROMPT, UNGUARDED_SYSTEM_PROMPT, buildIntakeMessage } = require('./prompts');
 const { runJest, runSpecificTest, summarizeForModel } = require('./testRunner');
 const { getCallGraph } = require('./callGraph');
 const { runSnippet } = require('./snippet');
@@ -8,9 +8,13 @@ const { pruneContents } = require('./context');
 const MAX_TURNS = 45;
 
 class BugSession {
-  constructor({ client, provider, model, effort, projectRoot, fileOps, logger, bugNum, target, currentSummary, priorFixes, maxAttempts = 4, budget = null, contextOptions = {} }) {
+  constructor({ client, provider, model, effort, projectRoot, fileOps, logger, bugNum, target, currentSummary, priorFixes, maxAttempts = 4, budget = null, contextOptions = {}, guarded = true }) {
     // `provider` is the LLMProvider; `client` accepted as a legacy alias.
     this.provider = provider || client;
+    // guarded=false is the benchmark's control arm: no hypothesis-before-edit
+    // lock, no forced revert, tests editable. Never a production configuration.
+    this.guarded = guarded;
+    this.systemPrompt = guarded ? SYSTEM_PROMPT : UNGUARDED_SYSTEM_PROMPT;
     this.client = this.provider;
     this.budget = budget;
     this.contextOptions = contextOptions;
@@ -186,16 +190,26 @@ class BugSession {
     let verdict = `\n\n[HARNESS VERDICT: ATTEMPT ${this.attempts}/${this.maxAttempts} FAILED] ${detail}.`;
     if (this.attempts >= this.maxAttempts) {
       this.budgetExhausted = true;
-      verdict +=
-        ' The attempt budget is EXHAUSTED. Revert every modified file (revert_file), then call finish_bug(status="needs_human_review") with a full attempts_narrative.';
-    } else {
+      verdict += this.guarded
+        ? ' The attempt budget is EXHAUSTED. Revert every modified file (revert_file), then call finish_bug(status="needs_human_review") with a full attempts_narrative.'
+        : ' The attempt budget is EXHAUSTED. Close the bug out with finish_bug.';
+    } else if (this.guarded) {
       verdict +=
         ` Required next steps: (1) revert_file on each modified file [${modified.join(', ')}], (2) record_learning, (3) form a revised hypothesis. edit_file stays locked until then.`;
+    } else {
+      verdict += ' Keep going.';
     }
     return { text: text + verdict };
   }
 
   handleEditFile(input) {
+    if (!this.guarded) {
+      // Control arm: blind patching permitted, no revert discipline enforced.
+      const { rel, patch } = this.fileOps.editFile(input.path, input.changes);
+      this.verifiedSuccess = false;
+      this.logger.event('fix_applied', { file: rel, reason: input.reason, patch, guarded: false });
+      return { text: `Edit applied to ${rel}.\n${patch}\nRe-run the tests to check your work.` };
+    }
     if (this.confirmations.length === 0) {
       return {
         text:
@@ -364,7 +378,9 @@ class BugSession {
     }
 
     if (input.status === 'needs_human_review') {
-      if (!this.budgetExhausted && !this.harnessForcedReview) {
+      // The control arm may escalate whenever it likes; forcing it to keep
+      // trying would be a guardrail, which is the thing being withheld.
+      if (this.guarded && !this.budgetExhausted && !this.harnessForcedReview) {
         return {
           text: `[HARNESS GUARD] needs_human_review rejected: only ${this.attempts}/${this.maxAttempts} attempts used. Keep investigating — form a new hypothesis and test it.`,
           isError: true,
@@ -419,7 +435,7 @@ class BugSession {
       let res;
       try {
         res = await this.provider.generateWithTools({
-          system: SYSTEM_PROMPT,
+          system: this.systemPrompt,
           toolDefs: TOOL_DEFINITIONS,
           contents: pruning.contents,
         });
