@@ -3,3 +3,4 @@ node_modules/
 .env.*
 !.env.example
 .agent-snippet.js
+.bench-workspace*/
