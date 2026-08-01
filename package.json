@@ -16,7 +16,9 @@
     "bench": "node benchmark/bench.js",
     "bench:validate": "node benchmark/validate.js",
     "bench:report": "node benchmark/bench.js --regenerate",
-    "trace:view": "node scripts/trace-view.js"
+    "trace:view": "node scripts/trace-view.js",
+    "test:agent": "jest --config jest.agent.config.js",
+    "test:agent:coverage": "jest --config jest.agent.config.js --coverage"
   },
   "dependencies": {
     "@google/genai": "^2.11.0",
@@ -34,7 +36,9 @@
     "testPathIgnorePatterns": [
       "/node_modules/",
       "/benchmark/",
-      "/.bench-workspace"
+      "/.bench-workspace",
+      "/agent-tests/",
+      "/.agent-test-workspaces/"
     ]
   }
 }

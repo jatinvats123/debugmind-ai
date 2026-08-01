@@ -1,0 +1,89 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`markdown rendering matches the pinned snapshot 1`] = `
+"# Autonomous Debugging Agent — Final Report
+
+- Completed: 2026-01-01T00:00:00.000Z
+- Duration: 42s
+- Final test state: **3/3 passing**
+- Token usage: 8 API calls, 1000 in / 200 out (cache: 0 read, 0 written)
+- Cost: not reported — unpriced: no verified rate for "mock"
+
+<details><summary>Run manifest (reproducibility)</summary>
+
+- Run id: \`fixed-run-id\`
+- Provider: MockProvider / \`mock\` (resolved version \`v1\`)
+- Temperature: 0 — temperature=0
+- System prompt hash: \`aaaaaaaaaaaaaaaa\`
+- Tool schema hash: \`bbbbbbbbbbbbbbbb\`
+- App source hash: \`cccccccccccccccc\`
+- Runtime: Node v24.0.0 on test
+- Git: \`abcdef12\` on \`test\`
+
+</details>
+
+## Bug #1: greet greets with Hello
+
+**Status:** ✅ fixed | **Difficulty:** Easy | **Confidence:** 95% | **Attempts:** 1 (0 failed) | **Duration:** 42s
+
+**Difficulty rationale:** 2 hypotheses considered, 0 failed attempt(s), 1 application file(s) traced (2 incl. tests) plus 1 cross-file lookup(s); symptom surfaced in tests/greet.test.js but the root cause lived in src/greet.js
+
+**Symptom** (tests/greet.test.js):
+\`\`\`
+Expected "Hello Bob"
+  at greet.test.js:5
+\`\`\`
+
+**Hypotheses considered:**
+- \`H1\` (high likelihood → **confirmed**) wrong prefix
+  - location: src/greet.js:2
+  - reasoning: source says Hi
+- \`H2\` (low likelihood → **not pursued / implicitly rejected**) test wrong
+  - location: tests/greet.test.js:5
+  - reasoning: unlikely
+
+<details><summary><b>Why the agent believed this</b> — evidence trail</summary>
+
+1. **symptom** — \`greet greets with Hello\` failed in tests/greet.test.js
+   - Expected "Hello Bob"
+2. **exploration** — read \`tests/greet.test.js\`, \`src/greet.js\`; traced call graph for \`greet\`
+3. **hypothesis H1** — (high) wrong prefix
+   - src/greet.js:2 — source says Hi
+4. **hypothesis H2** — (low) test wrong
+   - tests/greet.test.js:5 — unlikely
+5. **probe** — observe greet output
+   - observed:
+     \`\`\`
+     Hi Bob
+     \`\`\`
+6. **confirmed H1** — via snippet_probe, corroborated by the harness (harness observed 1 probe(s), 0 isolated run(s) after the hypotheses were recorded)
+   - probe printed "Hi Bob"
+7. **fix** — edited \`src/greet.js\`
+   - prefix must be Hello
+8. **verification** — target test passes with zero regressions, re-checked independently (harness full-suite re-run)
+
+</details>
+
+**Verification methods:**
+- hypothesis H1: snippet_probe — probe printed "Hi Bob"
+- harness full-suite re-run
+- (1 non-destructive snippet probe(s) run)
+
+**Root cause:** greet returned the wrong prefix
+
+**Fix:** changed the prefix to Hello
+Files changed: src/greet.js
+
+**What changed (before → after):**
+
+\`src/greet.js\`:
+\`\`\`diff
+ function greet(name) {
+-  return 'Hi ' + name;
++  return 'Hello ' + name;
+ }
+\`\`\`
+
+**Confidence rationale:** root cause reproduced with a runtime probe before editing; fix validated by an independent harness full-suite re-run; fixed on the first attempt. (Agent self-reported 0.95.)
+"
+`;

@@ -7,3 +7,5 @@ node_modules/
 benchmark/logs/
 debug-trace.jsonl
 debug-trace.html
+.agent-test-workspaces/
+coverage/
