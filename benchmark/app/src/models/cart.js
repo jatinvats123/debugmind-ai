@@ -36,6 +36,23 @@ class Cart {
     return this;
   }
 
+  /** Apply several quantity changes at once, then drop lines that reached zero. */
+  setQuantities(updates) {
+    for (const { productId, quantity } of updates) {
+      const item = this.items.find((i) => i.productId === Number(productId));
+      if (!item) {
+        throw new Error(`Item ${productId} is not in the cart`);
+      }
+      item.quantity = quantity;
+    }
+    this.removeEmptyLines();
+    return this;
+  }
+
+  removeEmptyLines() {
+    this.items = this.items.filter((item) => item.quantity > 0);
+  }
+
   removeItem(productId) {
     this.items = this.items.filter((i) => i.productId !== Number(productId));
     return this;

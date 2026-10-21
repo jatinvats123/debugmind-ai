@@ -1,5 +1,6 @@
 const express = require('express');
 const { getOrCreateCart } = require('../models/cart');
+const { parseQuantity } = require('../utils/validation');
 
 const router = express.Router();
 
@@ -13,11 +14,27 @@ router.get('/', (req, res) => {
 });
 
 router.post('/items', (req, res) => {
-  const { productId, quantity } = req.body;
+  const { productId, quantity = 1 } = req.body;
   const cart = getOrCreateCart(resolveCartId(req));
   try {
-    cart.addItem(productId, quantity || 1);
+    cart.addItem(productId, parseQuantity(quantity));
     res.status(201).json({ items: cart.items, subtotal: cart.getSubtotal() });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Bulk update from the cart page: { updates: [{ productId, quantity }] }.
+// A quantity of 0 removes that line.
+router.patch('/items', (req, res) => {
+  const cart = getOrCreateCart(resolveCartId(req));
+  try {
+    const updates = (req.body.updates || []).map((u) => ({
+      productId: u.productId,
+      quantity: parseQuantity(u.quantity, { min: 0 }),
+    }));
+    cart.setQuantities(updates);
+    res.json({ items: cart.items, subtotal: cart.getSubtotal() });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
