@@ -163,6 +163,10 @@ async function runFixture({
     hypotheses,
     wallClockSeconds: Math.round((Date.now() - startedAt) / 1000),
     tokens: budget.summary().totalTokens,
+    // The split is what the report prices; cached tokens are a subset of input.
+    inputTokens: budget.summary().inputTokens,
+    cacheReadTokens: budget.summary().cacheReadTokens,
+    outputTokens: budget.summary().outputTokens,
     apiCalls: budget.summary().apiCalls,
     estimatedCostUsd: budget.summary().estimatedCostUsd,
     budgetAborted: budget.summary().aborted,

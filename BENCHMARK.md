@@ -81,3 +81,14 @@ Same model, same tools, same attempt budget. The unguarded arm has the three beh
 | easy | 5 | 5 / 5 | 5 / 5 |
 | medium | 4 | 4 / 4 | 3 / 4 |
 | hard | 3 | 3 / 3 | 3 / 3 |
+
+## How to re-run on the expanded suite
+
+The numbers above were measured on the original 12 fixtures. The suite now has 32 (two of them deliberately unfixable), and the app under test grew from 54 to 112 tests to host the new bugs, so these 24 results are stale for the expanded suite and are not comparable with a new run.
+
+```bash
+npm run bench:validate   # no key needed: every fixture must report "as declared"
+npm run bench            # needs GEMINI_API_KEY in .env (copy .env.example)
+```
+
+`npm run bench` stamps each result with a fingerprint of the app, the fixture and the model, re-runs every stale or missing cell (all 64 fixture×arm runs the first time), and rewrites this file. If a quota limit stops it, run it again and it resumes from the cells it has not recorded yet. Cost per fixture and cost per resolved bug are priced from measured tokens at the Standard-tier rate in `agent/pricing.json` (checked against https://ai.google.dev/gemini-api/docs/pricing on 2026-10-22); the free tier charges nothing for the same runs. `npm run bench:report` rebuilds this file from recorded results without calling the API.

@@ -30,6 +30,30 @@ function loadPricing(projectRoot) {
   }
 }
 
+/** The verified rate for a model, or null when pricing.json has none. */
+function rateFor(pricing, model) {
+  const entry = ((pricing && pricing.perMillionTokens) || {})[model];
+  if (!entry || entry.input == null || entry.output == null) return null;
+  return entry;
+}
+
+/**
+ * USD cost of measured token counts at a per-million-token rate.
+ *
+ * Cached prompt tokens are a subset of input tokens (Gemini's promptTokenCount
+ * includes cachedContentTokenCount, and the Gemini provider passes both through
+ * unchanged). When the rate lists a cachedInput price, that subset is charged at
+ * it instead of the full input price.
+ */
+function tokenCostUsd({ inputTokens = 0, outputTokens = 0, cacheReadTokens = 0 }, rate) {
+  const cached = rate.cachedInput != null ? Math.min(cacheReadTokens, inputTokens) : 0;
+  const usd =
+    ((inputTokens - cached) / 1e6) * rate.input +
+    (cached / 1e6) * (rate.cachedInput || 0) +
+    (outputTokens / 1e6) * rate.output;
+  return Number(usd.toFixed(6));
+}
+
 class Budget {
   /**
    * @param {object} opts
@@ -55,9 +79,7 @@ class Budget {
   }
 
   get rate() {
-    const entry = (this.pricing.perMillionTokens || {})[this.model];
-    if (!entry || entry.input == null || entry.output == null) return null;
-    return entry;
+    return rateFor(this.pricing, this.model);
   }
 
   get totalTokens() {
@@ -73,9 +95,7 @@ class Budget {
         reason: `unpriced: no verified rate for "${this.model}" in agent/pricing.json`,
       };
     }
-    const usd =
-      (this.totals.inputTokens / 1e6) * rate.input + (this.totals.outputTokens / 1e6) * rate.output;
-    return { usd: Number(usd.toFixed(6)), reason: null, verifiedOn: rate.verifiedOn || null };
+    return { usd: tokenCostUsd(this.totals, rate), reason: null, verifiedOn: rate.verifiedOn || null };
   }
 
   elapsedMs() {
@@ -151,4 +171,4 @@ class Budget {
   }
 }
 
-module.exports = { Budget, BudgetExceededError, loadPricing };
+module.exports = { Budget, BudgetExceededError, loadPricing, rateFor, tokenCostUsd };
