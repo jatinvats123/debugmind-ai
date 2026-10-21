@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Jest · Benchmark fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # `npm test` runs the demo app in tests/, which ships with 3 planted bugs
+      # (7 tests fail by design). The pristine copy in benchmark/app must be green.
+      - name: Unit tests (Jest, pristine benchmark app)
+        run: npx jest --rootDir benchmark/app --testPathIgnorePatterns /node_modules/
+
+      # Pristine app green, every fixture applies, each bug fails exactly its declared tests.
+      - name: Validate benchmark fixtures (no API key)
+        run: npm run bench:validate

@@ -1,5 +1,7 @@
 # DebugMind
 
+[![CI](https://github.com/jatinvats123/debugmind-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/jatinvats123/debugmind-ai/actions/workflows/ci.yml)
+
 An autonomous debugging agent that fixes failing tests in a Node.js/Express codebase — under a harness that makes it *prove* its reasoning before it is allowed to touch a line of code.
 
 ![DebugMind fixing a bug end to end](docs/media/demo.svg)
@@ -89,7 +91,7 @@ Runs are replayable. Every run records a manifest — resolved model version (no
 - Single-repo, single-language (JavaScript), and small codebases — the call graph is built by parsing the whole project on each query.
 - **Fix quality is bounded by test quality.** The agent optimises for "the tests pass", which is a proxy for correctness, and it will exploit the gap (see above).
 - Benchmarked on one model (`gemini-3.1-flash-lite`) at n=12. Treat the comparison as indicative, not conclusive.
-- No CI yet — the benchmark is run manually.
+- CI validates the 12 fixtures on every pull request and push to main; the full benchmark (both arms, live model calls) is run manually.
 
 ## Stack
 
