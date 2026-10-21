@@ -108,7 +108,7 @@ function fmt(value, digits = 1, suffix = '') {
 
 function fmtInt(value) {
   if (value === null || value === undefined) return TODO;
-  return Math.round(value).toLocaleString();
+  return Math.round(value).toLocaleString('en-US');
 }
 
 function summarize(results) {

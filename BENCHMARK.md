@@ -33,7 +33,7 @@ Same model, same tools, same attempt budget. The unguarded arm has the three beh
 | Mean regressions per fixture | 0.00 | 0.00 |
 | Test files tampered with | 0 | 0 |
 | Mean wall clock | 138s | 236s |
-| Mean tokens per fixture | 2,30,524 | 1,89,170 |
+| Mean tokens per fixture | 230,524 | 189,170 |
 | Mean API calls per fixture | 16.8 | 17.8 |
 | Mean cost per fixture | _unpriced_ | _unpriced_ |
 | Harness/API errors | 0 | 0 |
