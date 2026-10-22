@@ -10,15 +10,27 @@
  * Any cell with no recorded run is rendered as TODO(run-required) rather than
  * estimated. A missing number is honest; an invented one is not.
  *
+ * Each result is stamped with a fingerprint of the app under test, its fixture
+ * and the model. A result whose fingerprint no longer matches (the app or the
+ * fixture changed, or it predates fingerprints) is stale: `npm run bench`
+ * re-runs it and the report leaves it out, so numbers from different versions
+ * of the suite are never mixed in one table.
+ *
+ * Cost is priced when the report is written, from each run's measured token
+ * split and the rate in agent/pricing.json, so adding or correcting a rate only
+ * needs --regenerate, not another run.
+ *
  *   node benchmark/bench.js --arms guarded            # guarded arm only
  *   node benchmark/bench.js --only 01-off-by-one-shipping-band
  *   node benchmark/bench.js --regenerate              # rebuild the report only
  */
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { execFileSync } = require('child_process');
-const { loadFixtures } = require('./fixtures');
-const { runFixture } = require('./runner');
+const { loadFixtures, APP_DIR } = require('./fixtures');
+const { runFixture, hashDir } = require('./runner');
+const { loadPricing, rateFor, tokenCostUsd } = require('../agent/budget');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const RESULTS_DIR = path.join(__dirname, 'results');
@@ -85,6 +97,28 @@ function saveResult(result) {
   fs.writeFileSync(resultPath(result.fixtureId, result.arm), JSON.stringify(result, null, 2));
 }
 
+/** fixture -> fingerprint of (app under test, fixture definition, model). */
+function makeFingerprinter(model) {
+  const appHash = hashDir(APP_DIR);
+  const cache = new Map();
+  return (fixture) => {
+    if (!cache.has(fixture.id)) {
+      const hash = crypto.createHash('sha256');
+      hash.update(appHash);
+      hash.update(fs.readFileSync(path.join(REPO_ROOT, fixture._file)));
+      hash.update(model);
+      cache.set(fixture.id, hash.digest('hex').slice(0, 16));
+    }
+    return cache.get(fixture.id);
+  };
+}
+
+/** Dollar cost of one run, or null if the model is unpriced or the run has no token split. */
+function runCostUsd(result, rate) {
+  if (!rate || typeof result.inputTokens !== 'number' || typeof result.outputTokens !== 'number') return null;
+  return tokenCostUsd(result, rate);
+}
+
 function gitCommit() {
   try {
     return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
@@ -114,7 +148,11 @@ function fmtInt(value) {
 function summarize(results) {
   if (results.length === 0) return null;
   const correct = results.filter((r) => r.correct).length;
-  const costs = results.map((r) => r.estimatedCostUsd).filter((c) => typeof c === 'number');
+  const resolved = results.filter((r) => r.outcome === 'resolved').length;
+  // A dollar total means something only when every run in the arm is priced.
+  const costs = results.map((r) => r.costUsd);
+  const totalCost = costs.every((c) => typeof c === 'number') ? costs.reduce((a, b) => a + b, 0) : null;
+  const totalTokens = results.reduce((s, r) => s + (r.tokens || 0), 0);
   return {
     n: results.length,
     correct,
@@ -126,9 +164,28 @@ function summarize(results) {
     meanSeconds: mean(results.map((r) => r.wallClockSeconds)),
     meanTokens: mean(results.map((r) => r.tokens)),
     meanApiCalls: mean(results.map((r) => r.apiCalls)),
-    meanCost: costs.length === results.length ? mean(costs) : null,
+    meanCost: totalCost === null ? null : totalCost / results.length,
+    totalCost,
+    resolved,
+    // Everything the arm spent, failed and escalated runs included, per bug actually fixed.
+    costPerResolved: totalCost !== null && resolved > 0 ? totalCost / resolved : null,
+    tokensPerResolved: resolved > 0 ? totalTokens / resolved : null,
     errors: results.filter((r) => r.error).length,
   };
+}
+
+function fmtUsd(value) {
+  return value === null || value === undefined ? '_unpriced_' : `$${value.toFixed(4)}`;
+}
+
+function describeRate(rate, model) {
+  if (!rate) return `unpriced: no verified rate for \`${model}\` in \`agent/pricing.json\``;
+  const cached = rate.cachedInput != null ? ` / $${rate.cachedInput} cached input` : '';
+  return (
+    `$${rate.input} input${cached} / $${rate.output} output per 1M tokens` +
+    `${rate.tier ? ` (${rate.tier})` : ''}, verified ${rate.verifiedOn || 'on an unrecorded date'}` +
+    `${rate.source ? ` from ${rate.source}` : ''}`
+  );
 }
 
 // ---------- report ----------
@@ -145,26 +202,43 @@ function outcomeLabel(result) {
   return icons[result.outcome] || result.outcome;
 }
 
-function renderReport({ fixtures, arms, args, runMeta }) {
+function renderReport({ fixtures, arms, args, runMeta, fingerprint, rate }) {
   const L = [];
+
+  // Only results recorded against the current suite count; see the header comment.
+  const resultFor = (f, arm) => {
+    const r = loadResult(f.id, arm);
+    if (!r || r.suiteFingerprint !== fingerprint(f)) return null;
+    return { ...r, costUsd: runCostUsd(r, rate) };
+  };
   const byArm = {};
+  let staleCells = 0;
   for (const arm of arms) {
-    byArm[arm] = fixtures.map((f) => loadResult(f.id, arm)).filter(Boolean);
+    byArm[arm] = fixtures.map((f) => resultFor(f, arm)).filter(Boolean);
+    staleCells += fixtures.filter((f) => loadResult(f.id, arm) && !resultFor(f, arm)).length;
   }
 
   const totalCells = fixtures.length * arms.length;
   const filledCells = arms.reduce((sum, arm) => sum + byArm[arm].length, 0);
+  const unfixable = fixtures.filter((f) => f.expectedResolution === 'needs_human_review').length;
 
   L.push('# DebugMind — Benchmark');
   L.push('');
   L.push(
-    'Measured results for the autonomous debugging agent against a 12-bug fixture suite. ' +
+    `Measured results for the autonomous debugging agent against a ${fixtures.length}-fixture suite ` +
+      `(${unfixable} of them deliberately unfixable). ` +
       'Every number below comes from an actual run; cells with no run are marked ' +
       `${TODO} rather than estimated.`
   );
   L.push('');
-  L.push(`- **Coverage:** ${filledCells}/${totalCells} fixture×arm runs recorded`);
+  L.push(
+    `- **Coverage:** ${filledCells}/${totalCells} fixture×arm runs recorded` +
+      (staleCells > 0
+        ? ` (${staleCells} older result(s) recorded against a previous version of the app, fixtures or model are excluded)`
+        : '')
+  );
   L.push(`- **Model:** \`${runMeta.model}\` @ temperature ${runMeta.temperature}, effort ${runMeta.effort}`);
+  L.push(`- **Pricing:** ${describeRate(rate, runMeta.model)}`);
   L.push(`- **Attempt budget:** ${runMeta.maxAttempts} failed attempts per bug`);
   if (runMeta.commit) L.push(`- **Commit:** \`${runMeta.commit}\``);
   L.push(`- **Generated:** ${new Date().toISOString()}`);
@@ -182,7 +256,7 @@ function renderReport({ fixtures, arms, args, runMeta }) {
   );
   L.push('');
   L.push('- **resolved** — every test the fixture declared failing now passes, with zero regressions.');
-  L.push('- **escalated (correct)** — the fixture is the unfixable one and the agent correctly reported `needs_human_review` without leaving damage behind.');
+  L.push('- **escalated (correct)** — the fixture is one of the unfixable ones and the agent correctly reported `needs_human_review` without leaving damage behind.');
   L.push('- **escalated** — gave up on a fixture that was solvable.');
   L.push('- **incorrect** — claimed done but the pristine suite disagrees, or regressed something.');
   L.push('');
@@ -216,12 +290,17 @@ function renderReport({ fixtures, arms, args, runMeta }) {
   row('Mean wall clock', (s) => fmt(s.meanSeconds, 0, 's'));
   row('Mean tokens per fixture', (s) => fmtInt(s.meanTokens));
   row('Mean API calls per fixture', (s) => fmt(s.meanApiCalls, 1));
-  row('Mean cost per fixture', (s) => (s.meanCost === null ? '_unpriced_' : `$${s.meanCost.toFixed(4)}`));
+  row('Mean cost per fixture', (s) => fmtUsd(s.meanCost));
+  row('Total cost, all fixtures', (s) => fmtUsd(s.totalCost));
+  row('**Cost per resolved bug**', (s) => (s.resolved === 0 ? 'n/a (none resolved)' : `**${fmtUsd(s.costPerResolved)}**`));
+  row('Tokens per resolved bug', (s) => (s.resolved === 0 ? 'n/a (none resolved)' : fmtInt(s.tokensPerResolved)));
   row('Harness/API errors', (s) => `${s.errors}`);
   L.push('');
   L.push(
-    '> Cost is reported only when `agent/pricing.json` carries a verified rate for the model. ' +
-      'Token counts are measured; dollar figures are deliberately not estimated from stale rates.'
+    '> Cost is priced from each run\'s measured input, cached-input and output tokens at the rate in ' +
+      '`agent/pricing.json`, and only when that file carries a verified rate for the model; dollar ' +
+      'figures are never estimated from stale rates. **Cost per resolved bug** is everything the arm ' +
+      'spent, failed and escalated runs included, divided by the fixtures it resolved.'
   );
   L.push('');
 
@@ -231,9 +310,9 @@ function renderReport({ fixtures, arms, args, runMeta }) {
   L.push('| # | Fixture | Category | Diff. | Expected | ' + arms.map((a) => `${a} outcome`).join(' | ') + ' | ' + arms.map((a) => `${a} att.`).join(' | ') + ' |');
   L.push('|---|---|---|---|---|' + arms.map(() => '---').join('|') + '|' + arms.map(() => '---').join('|') + '|');
   fixtures.forEach((f, i) => {
-    const cells = arms.map((a) => outcomeLabel(loadResult(f.id, a)));
+    const cells = arms.map((a) => outcomeLabel(resultFor(f, a)));
     const attempts = arms.map((a) => {
-      const r = loadResult(f.id, a);
+      const r = resultFor(f, a);
       return r ? String(r.attempts) : TODO;
     });
     L.push(
@@ -252,7 +331,7 @@ function renderReport({ fixtures, arms, args, runMeta }) {
   for (const category of categories) {
     const inCat = fixtures.filter((f) => f.category === category);
     const cells = arms.map((arm) => {
-      const results = inCat.map((f) => loadResult(f.id, arm)).filter(Boolean);
+      const results = inCat.map((f) => resultFor(f, arm)).filter(Boolean);
       if (results.length === 0) return TODO;
       return `${results.filter((r) => r.correct).length} / ${results.length}`;
     });
@@ -269,11 +348,28 @@ function renderReport({ fixtures, arms, args, runMeta }) {
     const inDiff = fixtures.filter((f) => f.difficulty === difficulty);
     if (inDiff.length === 0) continue;
     const cells = arms.map((arm) => {
-      const results = inDiff.map((f) => loadResult(f.id, arm)).filter(Boolean);
+      const results = inDiff.map((f) => resultFor(f, arm)).filter(Boolean);
       if (results.length === 0) return TODO;
       return `${results.filter((r) => r.correct).length} / ${results.length}`;
     });
     L.push(`| ${difficulty} | ${inDiff.length} | ${cells.join(' | ')} |`);
+  }
+  L.push('');
+
+  // ---- cost per fixture ----
+  L.push('## Cost per fixture');
+  L.push('');
+  L.push(`Measured tokens per run, and what they cost at ${rate ? 'the rate above' : 'a verified rate (none configured, so unpriced)'}.`);
+  L.push('');
+  L.push('| Fixture | ' + arms.map((a) => `${a} tokens (in / cached / out)`).join(' | ') + ' | ' + arms.map((a) => `${a} cost`).join(' | ') + ' |');
+  L.push('|---|' + arms.map(() => '---').join('|') + '|' + arms.map(() => '---').join('|') + '|');
+  for (const f of fixtures) {
+    const results = arms.map((a) => resultFor(f, a));
+    const tokens = results.map((r) =>
+      r ? `${fmtInt(r.inputTokens)} / ${fmtInt(r.cacheReadTokens)} / ${fmtInt(r.outputTokens)}` : TODO
+    );
+    const costs = results.map((r) => (r ? fmtUsd(r.costUsd) : TODO));
+    L.push(`| \`${f.id}\` | ${tokens.join(' | ')} | ${costs.join(' | ')} |`);
   }
   L.push('');
 
@@ -302,7 +398,11 @@ function renderReport({ fixtures, arms, args, runMeta }) {
     L.push(
       `${totalCells - filledCells} of ${totalCells} fixture×arm combinations have not been run yet and are marked ` +
         `${TODO}. They are unrun, not failed. Run \`npm run bench\` to fill them in; results accumulate in ` +
-        '`benchmark/results/` so an interrupted run resumes rather than restarting.'
+        '`benchmark/results/` so an interrupted run resumes rather than restarting.' +
+        (staleCells > 0
+          ? ` ${staleCells} of them hold a result recorded against an earlier version of the suite; ` +
+            '`npm run bench` re-runs those too.'
+          : '')
     );
     L.push('');
   }
@@ -323,6 +423,9 @@ async function main() {
     maxAttempts: args.maxAttempts,
     commit: gitCommit(),
   };
+  const fingerprint = makeFingerprinter(args.model);
+  const isCurrent = (result, fixture) => Boolean(result) && result.suiteFingerprint === fingerprint(fixture);
+  const rate = rateFor(loadPricing(REPO_ROOT), args.model);
 
   if (!args.regenerate) {
     const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -332,14 +435,21 @@ async function main() {
     }
 
     const plan = [];
+    let stale = 0;
     for (const arm of args.arms) {
       for (const fixture of fixtures) {
-        if (!args.force && loadResult(fixture.id, arm)) continue;
+        const existing = loadResult(fixture.id, arm);
+        if (!args.force && isCurrent(existing, fixture)) continue;
+        if (existing && !isCurrent(existing, fixture)) stale += 1;
         plan.push({ fixture, arm });
       }
     }
 
-    console.log(`${C.bold}Benchmark: ${plan.length} run(s) queued${C.reset} ${C.gray}(${fixtures.length} fixtures x ${args.arms.length} arm(s); already-recorded runs skipped unless --force)${C.reset}\n`);
+    console.log(
+      `${C.bold}Benchmark: ${plan.length} run(s) queued${C.reset} ${C.gray}(${fixtures.length} fixtures x ${args.arms.length} arm(s); ` +
+        `runs already recorded against this suite are skipped unless --force` +
+        `${stale > 0 ? `; ${stale} stale result(s) from an earlier suite will be re-run` : ''})${C.reset}\n`
+    );
 
     let index = 0;
     for (const { fixture, arm } of plan) {
@@ -359,7 +469,7 @@ async function main() {
           workspaceDir: path.join(REPO_ROOT, `.bench-workspace-${arm}`),
           logDir: LOG_DIR,
         });
-        saveResult(result);
+        saveResult({ ...result, model: args.model, suiteFingerprint: fingerprint(fixture) });
         const ok = result.correct;
         console.log(
           `${ok ? C.green + '✓' : C.red + '✗'} ${result.outcome}${C.reset} ` +
@@ -377,12 +487,12 @@ async function main() {
     console.log();
   }
 
-  const report = renderReport({ fixtures, arms: args.arms, args, runMeta });
+  const report = renderReport({ fixtures, arms: args.arms, args, runMeta, fingerprint, rate });
   fs.writeFileSync(OUT_FILE, report);
   console.log(`${C.bold}Wrote ${path.relative(REPO_ROOT, OUT_FILE)}${C.reset}`);
 
   const recorded = args.arms.reduce(
-    (sum, arm) => sum + fixtures.filter((f) => loadResult(f.id, arm)).length,
+    (sum, arm) => sum + fixtures.filter((f) => isCurrent(loadResult(f.id, arm), f)).length,
     0
   );
   const total = fixtures.length * args.arms.length;

@@ -1,20 +1,34 @@
 {
   "_comment": [
     "Token prices in USD per 1,000,000 tokens, keyed by model id.",
-    "DELIBERATELY UNSET. Provider pricing changes and varies by tier, so these",
-    "are operator-supplied rather than hardcoded: a stale constant compiled into",
-    "the agent would silently produce wrong cost figures in BENCHMARK.md.",
+    "Provider pricing changes and varies by tier, so a model is priced here only",
+    "with a rate copied from the provider's official pricing page, with that page",
+    "in 'source' and the date it was checked in 'verifiedOn'. A stale constant",
+    "would silently produce wrong cost figures in BENCHMARK.md: re-check the page",
+    "and update 'verifiedOn' before publishing new numbers.",
+    "",
+    "gemini-3.1-flash-lite: Standard (paid) tier, text input, from",
+    "https://ai.google.dev/gemini-api/docs/pricing (page last updated 2026-10-19,",
+    "checked 2026-10-22). 'cachedInput' is the context-caching price charged for",
+    "prompt tokens served from cache; output includes thinking tokens, which is",
+    "how agent/providers/gemini.js already counts output. Cache storage fees apply",
+    "only to explicit caches, which the agent does not create. The free tier",
+    "charges nothing for the same runs; these figures are what the paid tier bills.",
     "",
     "Until a model is priced here, the agent reports token counts (which are",
     "measured and real) and reports cost as null with reason 'unpriced'.",
-    "It never estimates a dollar figure it cannot substantiate.",
-    "",
-    "To enable cost reporting, fill in the rates from the current pricing page",
-    "for your tier (https://ai.google.dev/pricing) and set 'verifiedOn'."
+    "It never estimates a dollar figure it cannot substantiate."
   ],
   "currency": "USD",
   "perMillionTokens": {
-    "gemini-3.1-flash-lite": { "input": null, "output": null, "verifiedOn": null },
+    "gemini-3.1-flash-lite": {
+      "input": 0.25,
+      "cachedInput": 0.025,
+      "output": 1.5,
+      "tier": "Gemini API Standard tier",
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "verifiedOn": "2026-10-22"
+    },
     "gemini-3-flash-preview": { "input": null, "output": null, "verifiedOn": null },
     "gemini-2.5-pro": { "input": null, "output": null, "verifiedOn": null }
   }

@@ -1,0 +1,4 @@
+# Benchmark fixtures inject bugs by exact-text find/replace, and their "find"
+# strings use \n. A CRLF checkout (core.autocrlf=true, the Windows default)
+# makes every multi-line patch miss, so pin the benchmark tree to LF everywhere.
+benchmark/** text eol=lf
